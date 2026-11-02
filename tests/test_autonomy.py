@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 from rov.autonomy import (
+    ADVANCE_MAX_S,
     APPROACH_SURGE,
     AVOID_YAW,
     BACKOFF_S,
     BACKOFF_SURGE,
+    CREEP_S,
+    CREEP_SURGE,
     LOST_TIMEOUT_S,
+    PEEK_S,
+    PEEK_TURN_DEG,
     SEARCH_SURGE,
+    SIDE_PEEKS,
     SLIDE_BACKOFF_S,
-    SLIDE_MAX_S,
-    SLIDE_SURGE,
     TOUCH_S,
     TOUCH_SURGE,
     TOUCH_AREA_RATIO,
@@ -204,7 +208,7 @@ class TestWallAvoidance:
 
 
 class TestWallSearch:
-    """撞墙 → 后退 → 沿墙横移巡逻（长方形水池对侧贴墙找球）。"""
+    """撞墙 → 持续后退离墙 → 小角度转停看 → 小步挪（长方形水池对侧贴墙找球）。"""
 
     def test_hit_wall_backs_off(self) -> None:
         """直行到墙没见球：先后退。"""
@@ -215,40 +219,93 @@ class TestWallSearch:
         assert out.surge < 0
         assert ctx.search_phase == "backoff"
 
-    def test_backoff_then_slide_turns(self) -> None:
-        """后退完成进入沿墙横移：先转向沿墙方向。"""
+    def test_backoff_continues_until_wall_clear(self) -> None:
+        """避障不是只做一次：墙没退开就一直后退，退开才进入停看。"""
+        ctx = AutonomyContext()
+        wall = WallSight(0.2, 0.5, 0.3)
+        step(ctx, LOST, FRAME, 0.0, wall=wall)              # → backoff
+        # 5 秒后墙还在 → 继续后退（不是只退一次）
+        out = step(ctx, LOST, FRAME, SLIDE_BACKOFF_S + 5.0, wall=wall)
+        assert ctx.search_phase == "backoff"
+        assert out.surge == BACKOFF_SURGE
+        # 墙退开了 → 转入停看
+        out2 = step(ctx, LOST, FRAME, SLIDE_BACKOFF_S + 6.0, wall=WallSight(0.1, 0.1, 0.1))
+        assert ctx.search_phase == "peek"
+        assert out2.surge == 0.0
+
+    def test_wall_recheck_in_any_phase(self) -> None:
+        """任何子阶段前方出现墙都立即回后退（不是一次性的）。"""
+        ctx = AutonomyContext()
+        ctx.search_phase = "creep"
+        ctx.phase_since = 0.0
+        wall = WallSight(0.3, 0.5, 0.3)
+        out = step(ctx, LOST, FRAME, 0.5, wall=wall)
+        assert ctx.search_phase == "backoff"
+        assert out.surge == BACKOFF_SURGE
+
+    def test_backoff_then_peek_small_turn(self) -> None:
+        """后退完成进入停看：小角度转（不是 90°）。"""
         ctx = AutonomyContext()
         wall = WallSight(0.2, 0.5, 0.3)
         step(ctx, LOST, FRAME, 0.0, wall=wall)          # → backoff
-        out = step(ctx, LOST, FRAME, SLIDE_BACKOFF_S, wall=wall)
-        assert ctx.search_phase == "slide"
+        out = step(ctx, LOST, FRAME, SLIDE_BACKOFF_S, wall=WallSight(0.1, 0.1, 0.1))
+        assert ctx.search_phase == "peek"
         assert out.yaw != 0.0                            # 无姿态 fallback：转向
 
-    def test_slide_with_yaw_turns_then_goes(self) -> None:
-        """有姿态传感器：先转到垂直航向（±90°），到位后横移前进。"""
+    def test_peek_with_yaw_turns_then_stops(self) -> None:
+        """有姿态传感器：转到小角度目标（25°），到位后停桨静止观察。"""
         ctx = AutonomyContext()
         wall = WallSight(0.2, 0.5, 0.3)
-        step(ctx, LOST, FRAME, 0.0, wall=wall, yaw_deg=0.0)   # 记住航向 0°
-        out = step(ctx, LOST, FRAME, SLIDE_BACKOFF_S, wall=wall, yaw_deg=0.0)
-        assert ctx.search_phase == "slide"
-        assert ctx.slide_target == 90.0                   # slide_dir=+1 → 目标 90°
-        assert out.yaw > 0                                # 右转到 90°
-        # 转到位后横移前进 + 保持航向
-        out2 = step(ctx, LOST, FRAME, SLIDE_BACKOFF_S + 1.0, yaw_deg=88.0)
-        assert out2.surge == SLIDE_SURGE
+        step(ctx, LOST, FRAME, 0.0, wall=wall, yaw_deg=0.0)          # 记住航向 0°
+        out = step(ctx, LOST, FRAME, SLIDE_BACKOFF_S, wall=WallSight(0.1, 0.1, 0.1),
+                   yaw_deg=0.0)
+        assert ctx.search_phase == "peek"
+        assert ctx.slide_target == PEEK_TURN_DEG        # 小角度 25°，不是 90°
+        assert out.yaw > 0                              # 右转到 25°
+        # 转到位（25°）后 → 停桨静止观察（"歇着看他"）
+        out2 = step(ctx, LOST, FRAME, SLIDE_BACKOFF_S + 1.0, yaw_deg=25.0)
+        assert out2.surge == 0.0 and out2.yaw == 0.0
 
-    def test_slide_reverses_after_timeout(self) -> None:
-        """单侧横移超时：掉头反向。"""
+    def test_peek_timeout_creeps_then_peeks_again(self) -> None:
+        """停看没找到 → 小步挪 → 再转一点再停看（角度递增）。"""
         ctx = AutonomyContext()
-        ctx.search_phase = "slide"
+        ctx.search_phase = "peek"
+        ctx.peek_turn_done = True
         ctx.phase_since = 0.0
+        ctx.heading_ref = 0.0
+        ctx.slide_target = PEEK_TURN_DEG
+        # 静止观察时长到 → 进 creep
+        out = step(ctx, LOST, FRAME, PEEK_S + 0.1, yaw_deg=PEEK_TURN_DEG)
+        assert ctx.search_phase == "creep"
+        assert out.surge == CREEP_SURGE
+        # creep 时长到 → 回 peek，目标角度递增到 50°
+        out2 = step(ctx, LOST, FRAME, PEEK_S + 0.1 + CREEP_S + 0.1,
+                    yaw_deg=PEEK_TURN_DEG)
+        assert ctx.search_phase == "peek"
+        assert ctx.slide_target == PEEK_TURN_DEG * 2     # 逐次递增
+        assert out2.surge == 0.0                         # 又停下来看
+
+    def test_reverses_after_side_peeks(self) -> None:
+        """同侧停看满 3 次：掉头去另一侧。"""
+        ctx = AutonomyContext()
+        ctx.search_phase = "creep"
+        ctx.phase_since = 0.0
+        ctx.peek_count = SIDE_PEEKS - 1
         ctx.slide_dir = 1.0
-        out = step(ctx, LOST, FRAME, SLIDE_MAX_S)         # 无墙无 yaw
+        step(ctx, LOST, FRAME, CREEP_S + 0.1, yaw_deg=0.0)
         assert ctx.slide_dir == -1.0
-        assert out.surge == SLIDE_SURGE
+        assert ctx.peek_count == 0
+
+    def test_advance_timeout_fallback(self) -> None:
+        """兜底：直行太久没见到球（可能墙检测漏判）→ 后退换方向，不许一直直行。"""
+        ctx = AutonomyContext()
+        ctx.state_since = 0.0
+        out = step(ctx, LOST, FRAME, ADVANCE_MAX_S + 1.0)
+        assert ctx.search_phase == "backoff"
+        assert out.surge == BACKOFF_SURGE
 
     def test_side_wall_correction(self) -> None:
-        """直行时贴左墙（跑偏）：向池心右修。"""
+        """直行时贴左墙（跑偏）：视觉居中向池心右修（无姿态数据也生效）。"""
         ctx = AutonomyContext()
         wall = WallSight(left=0.6, front=0.1, right=0.1)
         out = step(ctx, LOST, FRAME, 0.0, wall=wall)

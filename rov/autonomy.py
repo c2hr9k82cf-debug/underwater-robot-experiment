@@ -10,13 +10,18 @@
     DONE      停桨，任务结束
 
 寻找策略（长方形水池，球从一侧扔到对侧、贴墙）：
-    advance   直行前进找球（航向保持 + 贴侧墙向池心修正）
-    backoff   撞到对面墙还没见到球 → 先退离墙
-    slide     沿墙横移巡逻找球，单侧走完掉头走另一侧（来回）
+    advance   直行前进找球（航向保持 + 视觉居中防跑偏）
+    backoff   前方有墙 → 后退离墙（墙没退开就一直退，不止退一次）
+    peek      小角度转（25° 逐次递增）→ 停桨静止观察找球
+    creep     没找到就小步挪一下 → 再转一点再停看
+    同侧看满 3 次（累计约 75°）掉头看另一侧，来回直到发现球。
     子阶段是 SEARCH 内部记忆，检出即转入 ALIGN；目标丢失回 SEARCH 从 advance 重新开始。
 
+避障每帧都查、不是一次性：任何搜索子阶段前方出现墙都立即回 backoff 后退；
+直行超过 ADVANCE_MAX_S 未见球也兜底后退换方向（防墙检测漏判一直撞墙）。
+
 姿态传感器（yaw）用法：记住出发航向 → 直行保持航向防跑偏；
-横移前转到垂直方向（±90°）、横移中保持。无姿态数据时退化为定时转向。
+停看小角度转按航向精确定向。无姿态数据时用左右走廊视觉居中 + 定时转向兜底。
 
 决策函数是纯函数（输入检测结果+墙壁+姿态+时间 → 输出推力+新状态），
 全部可离线单测。本模块不含任何通信/显示代码。
@@ -46,17 +51,21 @@ BACKOFF_S: float = 1.5            # 后退时长
 LOST_TIMEOUT_S: float = 0.8       # 丢失超过该时长回搜索
 LOW_CONF_AREA_RATIO: float = 0.005  # 面积占比低于此视为低置信（只对中不前进）
 
-# --- 沿墙搜索（撞墙后退 → 横移巡逻）---
-SLIDE_BACKOFF_S: float = 1.5      # 撞墙后退时长
-SLIDE_SURGE: float = 0.35         # 沿墙横移速度
-SLIDE_MAX_S: float = 14.0         # 单侧横移时长，超过掉头
-TURN_YAW: float = 0.5             # 横移前转向速度（无姿态传感器 fallback）
+# --- 沿墙搜索（撞墙后退 → 小角度转停看 → 小步挪）---
+SLIDE_BACKOFF_S: float = 1.5      # 撞墙后至少后退时长（墙没退开则持续后退）
+PEEK_TURN_DEG: float = 25.0       # 每次停看的小角度转向（逐次递增，不转 90°）
+PEEK_TURN_TIME: float = 0.7       # 无姿态传感器时的转向时长（秒）
+PEEK_S: float = 2.0               # 停桨静止观察时长（画面稳，检测容易）
+CREEP_S: float = 2.0              # 小步挪动时长
+CREEP_SURGE: float = 0.3          # 小步挪动速度
+SIDE_PEEKS: int = 3               # 同侧停看次数，看满掉头去另一侧
+ADVANCE_MAX_S: float = 30.0       # 直行兜底：超时未见球也后退换方向
+TURN_YAW: float = 0.5             # 转向速度（无姿态传感器 fallback）
 TURN_KP: float = 0.01             # 转向航向 P 增益（度误差→推力）
-TURN_DONE_ERR: float = 12.0       # 转向到位角度容差（度）
-HEADING_KP: float = 0.015         # 航向保持增益（度误差→推力）
-HEADING_CAP: float = 0.3          # 航向修正上限
-SIDE_WALL_LIMIT: float = 0.45     # 侧墙蓝色占比超过此值视为贴墙（跑偏）
-SIDE_FIX_YAW: float = 0.2         # 贴侧墙时向池心修正的转向
+TURN_DONE_ERR: float = 6.0        # 转向到位角度容差（度）
+HEADING_KP: float = 0.03          # 航向保持增益（度误差→推力）
+HEADING_CAP: float = 0.35         # 航向/居中修正上限
+CENTER_FIX_KP: float = 0.35       # 视觉居中增益（左右走廊蓝色占比差→转向）
 
 
 class AutonomyState(Enum):
@@ -89,11 +98,13 @@ class AutonomyContext:
     last_seen_cx: Optional[float] = None  # 最后检出的归一化横坐标
     done: bool = False
     # --- SEARCH 沿墙搜索子阶段 ---
-    search_phase: str = "advance"       # advance / backoff / slide
-    phase_since: float = 0.0            # 进入当前子阶段的时刻
+    search_phase: str = "advance"       # advance / backoff / peek / creep
+    phase_since: float = 0.0            # 进入当前子步骤的时刻
     heading_ref: Optional[float] = None  # 出发航向（度）
-    slide_target: Optional[float] = None  # 横移目标航向（度）
-    slide_dir: float = 1.0              # 横移方向 +1 / -1
+    slide_target: Optional[float] = None  # 本次停看的目标航向（度）
+    slide_dir: float = 1.0              # 停看方向 +1 / -1
+    peek_turn_done: bool = False        # 停看前的小角度转是否到位
+    peek_count: int = 0                 # 同侧已停看次数（超 SIDE_PEEKS 掉头）
 
 
 # ------------------------------------------------------------------ #
@@ -120,12 +131,22 @@ def _heading_hold(
     return max(-cap, min(cap, HEADING_KP * _angle_diff(target, current)))
 
 
+def _peek_target(ctx: AutonomyContext, yaw_deg: Optional[float]) -> Optional[float]:
+    """本次停看的目标航向：出发航向 + 递增小角度（无姿态数据返回 None）。"""
+    if yaw_deg is None or ctx.heading_ref is None:
+        return None
+    step_deg = PEEK_TURN_DEG * (ctx.peek_count + 1) * ctx.slide_dir
+    return (ctx.heading_ref + step_deg) % 360.0
+
+
 def _reset_search(ctx: AutonomyContext) -> None:
     """回到直行搜索初始状态（保留 slide_dir 历史）。"""
     ctx.search_phase = "advance"
     ctx.phase_since = 0.0
     ctx.heading_ref = None
     ctx.slide_target = None
+    ctx.peek_turn_done = False
+    ctx.peek_count = 0
 
 
 def step(
@@ -196,7 +217,7 @@ def step(
         note = "任务完成"
 
     # ---- 避障（只有前方被墙占满且没看到目标才转；目标可见时直接冲目标）----
-    # SEARCH 的墙处理由下面的沿墙搜索子阶段负责；ALIGN 不前进；BACKOFF 在后退。
+    # SEARCH 的墙处理由下面的沿墙搜索子阶段负责（每帧都查）；ALIGN 不前进；BACKOFF 在后退。
     if (
         wall is not None
         and not detected
@@ -245,64 +266,89 @@ def _search_action(
     now: float,
     note: str,
 ) -> AutonomyOutput:
-    """SEARCH 的子阶段动作：advance 直行 → backoff 后退 → slide 沿墙横移。"""
+    """SEARCH 子阶段动作：advance 直行 → backoff 后退 → peek 停看 → creep 小步挪。"""
     # 记住出发航向
     if yaw_deg is not None and ctx.heading_ref is None:
         ctx.heading_ref = yaw_deg
 
-    # --- backoff：撞墙后退离墙 ---
-    if ctx.search_phase == "backoff":
-        if now - ctx.phase_since < SLIDE_BACKOFF_S:
-            return AutonomyOutput(BACKOFF_SURGE, 0.0, 0.0, ctx.state, note or "撞墙后退中")
-        # 后退完成 → 沿墙横移（切换帧直接走横移动作）
-        ctx.search_phase = "slide"
+    # ---- 避障不是一次性：任何子阶段前方有墙都退回后退（不止退一次）----
+    if wall is not None and wall.front >= WALL_FRONT_LIMIT \
+            and ctx.search_phase != "backoff":
+        ctx.search_phase = "backoff"
         ctx.phase_since = now
-        ctx.slide_target = None
-        if yaw_deg is not None and ctx.heading_ref is not None:
-            ctx.slide_target = (ctx.heading_ref + 90.0 * ctx.slide_dir) % 360.0
-        note = note or "退开了，沿墙横移找球"
+        note = note or "前方有墙，先后退"
 
-    # --- slide：沿墙横移巡逻，单侧超时掉头 ---
-    if ctx.search_phase == "slide":
-        if ctx.slide_target is None:
-            # 无姿态传感器：定时转 1.2 秒再直行，超时掉头
-            elapsed = now - ctx.phase_since
-            if elapsed < 1.2:
-                return AutonomyOutput(
-                    0.0, TURN_YAW * ctx.slide_dir, 0.0, ctx.state, note or "转向沿墙方向"
-                )
-            if elapsed >= SLIDE_MAX_S:
-                ctx.slide_dir *= -1
-                ctx.phase_since = now
-                note = "这侧没找到，掉头去另一侧"
-            return AutonomyOutput(SLIDE_SURGE, 0.0, 0.0, ctx.state, note)
-        # 有姿态传感器：先转到沿墙航向，再保持航向横移
-        diff = _angle_diff(ctx.slide_target, yaw_deg if yaw_deg is not None else 0.0)
-        if abs(diff) > TURN_DONE_ERR:
-            turn = max(-0.5, min(0.5, TURN_KP * diff))
-            return AutonomyOutput(0.0, turn, 0.0, ctx.state, note or "转向沿墙方向")
-        if now - ctx.phase_since >= SLIDE_MAX_S:
-            ctx.slide_dir *= -1
-            ctx.slide_target = (ctx.slide_target + 180.0) % 360.0
+    # --- backoff → peek → creep 子阶段（切换后重新评估，切换帧不停顿）---
+    while True:
+        # backoff：后退离墙；墙没退开就一直退
+        if ctx.search_phase == "backoff":
+            still_blocked = wall is not None and wall.front >= WALL_FRONT_LIMIT
+            if still_blocked or (now - ctx.phase_since < SLIDE_BACKOFF_S):
+                return AutonomyOutput(BACKOFF_SURGE, 0.0, 0.0, ctx.state, note or "后退离墙中")
+            # 退开了 → 小角度转，停下来找球
+            ctx.search_phase = "peek"
+            ctx.peek_turn_done = False
             ctx.phase_since = now
-            note = "这侧没找到，掉头去另一侧"
-        return AutonomyOutput(
-            SLIDE_SURGE, _heading_hold(ctx.slide_target, yaw_deg), 0.0, ctx.state, note
-        )
+            ctx.slide_target = _peek_target(ctx, yaw_deg)
+            note = note or "退开了，转一点停下来找球"
+            continue
 
-    # --- advance：直行找球 ---
-    if wall is not None and wall.front >= WALL_FRONT_LIMIT:
-        # 到墙边还没见到球（球贴在对面墙边）→ 后退 → 沿墙找
+        # peek：小角度转 → 停桨静止观察
+        if ctx.search_phase == "peek":
+            if not ctx.peek_turn_done:
+                if ctx.slide_target is not None and yaw_deg is not None:
+                    diff = _angle_diff(ctx.slide_target, yaw_deg)
+                    if abs(diff) > TURN_DONE_ERR:
+                        turn = max(-0.5, min(0.5, TURN_KP * diff))
+                        return AutonomyOutput(0.0, turn, 0.0, ctx.state, note or "小角度转向")
+                elif now - ctx.phase_since < PEEK_TURN_TIME:
+                    return AutonomyOutput(
+                        0.0, TURN_YAW * ctx.slide_dir, 0.0, ctx.state, note or "小角度转向"
+                    )
+                # 转到位 → 静止观察计时开始
+                ctx.peek_turn_done = True
+                ctx.phase_since = now
+            if now - ctx.phase_since < PEEK_S:
+                return AutonomyOutput(0.0, 0.0, 0.0, ctx.state, note or "停下来观察找球")
+            # 这里没有 → 小步挪一下再看
+            ctx.search_phase = "creep"
+            ctx.phase_since = now
+            note = note or "这里没有，小步挪一下再看"
+            continue
+
+        # creep：沿当前朝向小步挪动
+        if ctx.search_phase == "creep":
+            if now - ctx.phase_since < CREEP_S:
+                return AutonomyOutput(
+                    CREEP_SURGE, _heading_hold(ctx.slide_target, yaw_deg), 0.0, ctx.state, note
+                )
+            # 挪完 → 再转一点停看；同侧看满掉头去另一侧
+            ctx.peek_count += 1
+            if ctx.peek_count >= SIDE_PEEKS:
+                ctx.peek_count = 0
+                ctx.slide_dir *= -1
+                note = "这侧没找到，掉头去另一侧"
+            else:
+                note = note or "再转一点停下来找"
+            ctx.search_phase = "peek"
+            ctx.peek_turn_done = False
+            ctx.phase_since = now
+            ctx.slide_target = _peek_target(ctx, yaw_deg)
+            continue
+
+        break  # advance（子阶段之外）
+
+    # --- advance：直行找球（航向保持 + 视觉居中）---
+    if now - ctx.state_since >= ADVANCE_MAX_S:
+        # 兜底：直行太久没见到球（可能墙检测漏判）→ 后退换方向
         ctx.search_phase = "backoff"
         ctx.phase_since = now
         return AutonomyOutput(
-            BACKOFF_SURGE, 0.0, 0.0, ctx.state,
-            note or "到墙边没见到球，先后退再沿墙找",
+            BACKOFF_SURGE, 0.0, 0.0, ctx.state, "直行太久没找到，后退换方向"
         )
     yaw_cmd = _heading_hold(ctx.heading_ref, yaw_deg)
     if wall is not None:
-        if wall.left >= SIDE_WALL_LIMIT:
-            yaw_cmd = max(yaw_cmd, SIDE_FIX_YAW)    # 贴左墙（跑偏）→ 右修
-        elif wall.right >= SIDE_WALL_LIMIT:
-            yaw_cmd = min(yaw_cmd, -SIDE_FIX_YAW)   # 贴右墙（跑偏）→ 左修
+        # 视觉居中：贴左墙（left 大）→ 右修；贴右墙 → 左修；无姿态数据也能走直
+        yaw_cmd += CENTER_FIX_KP * (wall.left - wall.right)
+    yaw_cmd = max(-HEADING_CAP, min(HEADING_CAP, yaw_cmd))
     return AutonomyOutput(SEARCH_SURGE, yaw_cmd, 0.0, ctx.state, note)

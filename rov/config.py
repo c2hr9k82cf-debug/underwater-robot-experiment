@@ -67,5 +67,6 @@ MAX_ASPECT_RATIO: float = 2.5       # 宽高比超过此值视为非球形
 # 红球 H≤27，与蓝色完全正交，互不干扰
 WALL_HSV_LOWER: tuple[int, int, int] = (90, 50, 60)
 WALL_HSV_UPPER: tuple[int, int, int] = (130, 255, 255)
-# 前方走廊蓝色占比超过此值视为前方有墙（实测：正对墙 49%，开阔水 0%）
-WALL_FRONT_LIMIT: float = 0.40
+# 前方走廊蓝色占比超过此值视为前方有墙（实测：正对墙 49%，开阔浑水 0%）
+# 实机反馈 0.40 偏高（稍有角度就漏判、直行撞墙），降到 0.30 让触发更可靠
+WALL_FRONT_LIMIT: float = 0.30
