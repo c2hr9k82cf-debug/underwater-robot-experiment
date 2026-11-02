@@ -296,6 +296,13 @@ class TestWallSearch:
         assert ctx.slide_dir == -1.0
         assert ctx.peek_count == 0
 
+    def test_starts_straight_with_real_clock(self) -> None:
+        """真实单调时钟（大数）开局必须直行——超时兜底不能误伤第一帧。"""
+        ctx = AutonomyContext()
+        out = step(ctx, LOST, FRAME, 50000.0)   # time.monotonic() 风格的 now
+        assert ctx.search_phase == "advance"
+        assert out.surge == SEARCH_SURGE
+
     def test_advance_timeout_fallback(self) -> None:
         """兜底：直行太久没见到球（可能墙检测漏判）→ 后退换方向，不许一直直行。"""
         ctx = AutonomyContext()

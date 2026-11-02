@@ -93,13 +93,13 @@ class AutonomyContext:
     """状态机内部记忆（跨帧保持）。"""
 
     state: AutonomyState = AutonomyState.SEARCH
-    state_since: float = 0.0            # 进入当前状态的时刻
+    state_since: float = -1.0           # 进入当前状态的时刻（-1=未初始化）
     last_seen_at: float = -1.0          # 最后一次检出时刻
     last_seen_cx: Optional[float] = None  # 最后检出的归一化横坐标
     done: bool = False
     # --- SEARCH 沿墙搜索子阶段 ---
     search_phase: str = "advance"       # advance / backoff / peek / creep
-    phase_since: float = 0.0            # 进入当前子步骤的时刻
+    phase_since: float = -1.0           # 进入当前子步骤的时刻（-1=未初始化）
     heading_ref: Optional[float] = None  # 出发航向（度）
     slide_target: Optional[float] = None  # 本次停看的目标航向（度）
     slide_dir: float = 1.0              # 停看方向 +1 / -1
@@ -139,10 +139,10 @@ def _peek_target(ctx: AutonomyContext, yaw_deg: Optional[float]) -> Optional[flo
     return (ctx.heading_ref + step_deg) % 360.0
 
 
-def _reset_search(ctx: AutonomyContext) -> None:
+def _reset_search(ctx: AutonomyContext, now: float) -> None:
     """回到直行搜索初始状态（保留 slide_dir 历史）。"""
     ctx.search_phase = "advance"
-    ctx.phase_since = 0.0
+    ctx.phase_since = now
     ctx.heading_ref = None
     ctx.slide_target = None
     ctx.peek_turn_done = False
@@ -171,6 +171,13 @@ def step(
     if ctx.state is AutonomyState.DONE:
         return AutonomyOutput(0.0, 0.0, 0.0, AutonomyState.DONE, "任务已完成")
 
+    # 时间戳未初始化：真实单调时钟是大数，绝不能拿 0.0 当"起点"
+    # （否则开局第一帧就被超时兜底误判成"直行太久"）
+    if ctx.state_since < 0:
+        ctx.state_since = now
+    if ctx.phase_since < 0:
+        ctx.phase_since = now
+
     w, h = frame_size
     frame_area = float(w * h)
     detected = result.is_detected
@@ -189,13 +196,13 @@ def step(
     if ctx.state is AutonomyState.SEARCH and detected:
         ctx.state = AutonomyState.ALIGN
         ctx.state_since = now
-        _reset_search(ctx)
+        _reset_search(ctx, now)
         note = "发现目标，开始对准"
     elif ctx.state in (AutonomyState.ALIGN, AutonomyState.APPROACH) and not detected \
             and lost_for > LOST_TIMEOUT_S:
         ctx.state = AutonomyState.SEARCH
         ctx.state_since = now
-        _reset_search(ctx)
+        _reset_search(ctx, now)
         note = "目标丢失，恢复搜索"
     elif ctx.state is AutonomyState.ALIGN and detected and abs(err) < ALIGN_DONE_ERR:
         ctx.state = AutonomyState.APPROACH
