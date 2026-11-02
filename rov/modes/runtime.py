@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from pathlib import Path
 from typing import List, Optional
 
 import cv2
@@ -119,6 +120,27 @@ def confirm(prompt: str) -> bool:
     """终端 y/N 确认（危险操作前必须调用）。"""
     answer = input(f"{prompt} [y/N]: ").strip().lower()
     return answer in ("y", "yes")
+
+
+# 截图保存目录（项目根下，运行时生成，不入库）
+SNAPSHOT_DIR = Path(__file__).resolve().parents[2] / "snapshots"
+
+
+def save_snapshot(frame: np.ndarray) -> Path:
+    """保存当前帧**原图**（不带标注）到 snapshots/，返回文件路径。
+
+    存原图是为了之后能用 analyze_color.py 重新标定；
+    文件名带时间戳，同秒多次保存自动加序号。
+    """
+    SNAPSHOT_DIR.mkdir(exist_ok=True)
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    path = SNAPSHOT_DIR / f"snap_{stamp}.jpg"
+    n = 1
+    while path.exists():
+        path = SNAPSHOT_DIR / f"snap_{stamp}_{n}.jpg"
+        n += 1
+    cv2.imwrite(str(path), frame)
+    return path
 
 
 def pwm_hud_line(command: str) -> str:

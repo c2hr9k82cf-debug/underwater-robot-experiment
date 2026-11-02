@@ -1,17 +1,20 @@
 """检测验证模式（菜单 3）：只看检测框，不发任何指令。
 
-T 开关原始掩膜叠加，Q/ESC 返回主菜单。
+  T  开关原始掩膜叠加
+  P  保存当前图像（存 snapshots/，原图便于标定）
+  Q / ESC  返回主菜单
 """
 
 from __future__ import annotations
 
 import time
+from typing import Optional
 
 import cv2
 
 from rov.config import VIDEO_STREAM_URL, WINDOW_NAME
 from rov.detector import BallDetector
-from rov.modes.runtime import draw_hud, placeholder_frame
+from rov.modes.runtime import draw_hud, placeholder_frame, save_snapshot
 from rov.video_stream import VideoStream, VideoStreamError
 
 REOPEN_DELAY_S = 2.0
@@ -22,12 +25,14 @@ def run(video_url: str = VIDEO_STREAM_URL) -> None:
     stream = VideoStream(video_url, reconnect=False, frame_timeout_s=1.5)
     window = f"{WINDOW_NAME} - 检测验证"
     show_mask = False
+    saved_note: Optional[str] = None
+    saved_at = 0.0
     last_open_attempt = 0.0
     fps = 0.0
 
     print("─── 检测验证 ─────────────────────────────")
     print("  只看画面和检测框，不会发送任何推进器指令")
-    print("  T 开关掩膜叠加    Q / ESC 返回主菜单")
+    print("  T 开关掩膜叠加   P 保存图像   Q / ESC 返回主菜单")
     print("──────────────────────────────────────────")
 
     try:
@@ -59,6 +64,15 @@ def run(video_url: str = VIDEO_STREAM_URL) -> None:
                 break
             if key == ord("t"):
                 show_mask = not show_mask
+            elif key == ord("p"):
+                # 保存当前帧原图（标注前的画面，便于后续标定）
+                if frame is None:
+                    saved_note = "视频断开，无法保存"
+                else:
+                    path = save_snapshot(frame.copy())
+                    saved_note = f"已保存 {path.name}"
+                    print(f"已保存 {path}")
+                saved_at = now
 
             if frame is None:
                 frame = placeholder_frame()
@@ -74,11 +88,14 @@ def run(video_url: str = VIDEO_STREAM_URL) -> None:
                     f"DETECTED 中心({result.center[0]:.0f},{result.center[1]:.0f})"
                 )
 
-            draw_hud(frame, [
+            hud_lines = [
                 "检测验证（无指令输出）",
                 status,
-                f"FPS {fps:.1f} | T 掩膜 | Q/ESC 返回",
-            ])
+            ]
+            if saved_note is not None and now - saved_at < 2.5:
+                hud_lines.append(saved_note)
+            hud_lines.append(f"FPS {fps:.1f} | T 掩膜 P 保存 | Q/ESC 返回")
+            draw_hud(frame, hud_lines)
             cv2.imshow(window, frame)
     finally:
         stream.close()

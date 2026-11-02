@@ -1,4 +1,4 @@
-"""手动控制模式（WASD 驾驶）。
+"""手动控制模式（WASD 驾驶 + 自动检测 + 一键保存图像）。
 
 按键设计为"按住生效、松开自动回停"（约 0.5 秒无按键即回中位），
 这是刻意的安全设计：手一松机器人就停。空格立即停桨。
@@ -7,8 +7,9 @@
   A / D      左转 / 右转
   R / F      上浮 / 下潜
   1 / 2 / 3  速度档（慢 0.35 / 中 0.6 / 快 1.0）
+  P          保存当前图像（存 snapshots/，原图便于标定）
   空格       立即停桨
-  T          开关检测框叠加
+  T          开关检测框叠加（默认开）
   Q / ESC    退出（自动发停桨帧）
 
 终端只在关键事件打一行，状态全部画在视频窗口左上角。
@@ -17,13 +18,19 @@
 from __future__ import annotations
 
 import time
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 import cv2
 
 from rov.config import VIDEO_STREAM_URL, WINDOW_NAME
 from rov.detector import BallDetector
-from rov.modes.runtime import CommRunner, draw_hud, placeholder_frame, pwm_hud_line
+from rov.modes.runtime import (
+    CommRunner,
+    draw_hud,
+    placeholder_frame,
+    pwm_hud_line,
+    save_snapshot,
+)
 from rov.video_stream import VideoStream, VideoStreamError
 
 # 按键 → (轴, 方向)。yaw 正=右转，负=左转
@@ -49,9 +56,11 @@ def run(live: bool = False, video_url: str = VIDEO_STREAM_URL) -> None:
 
     comm = CommRunner(WEBSOCKET_URL, live=live)
     detector = BallDetector()
-    show_detect = False
+    show_detect = True  # 自动检测默认开
     speed_idx = 0
     axes: Dict[str, Tuple[float, float]] = {"surge": (0.0, 0.0), "yaw": (0.0, 0.0), "heave": (0.0, 0.0)}
+    saved_note: Optional[str] = None
+    saved_at = 0.0
 
     stream = VideoStream(video_url, reconnect=False, frame_timeout_s=1.5)
     window = f"{WINDOW_NAME} - 手动控制"
@@ -60,8 +69,9 @@ def run(live: bool = False, video_url: str = VIDEO_STREAM_URL) -> None:
 
     print("─── 手动控制 ─────────────────────────────")
     print("  W/S 前进后退   A/D 左转右转   R/F 上浮下潜")
-    print("  1/2/3 速度档   空格 立即停桨   T 检测框开关")
-    print("  Q / ESC 退出   （松开按键约 0.5 秒自动回停）")
+    print("  1/2/3 速度档   P 保存图像    空格 立即停桨")
+    print("  T 检测框开关（默认开）   Q / ESC 退出")
+    print("  （松开按键约 0.5 秒自动回停）")
     print(f"  连接模式：{'真实机器人' if live else '模拟（不发指令）'}")
     print("──────────────────────────────────────────")
 
@@ -99,6 +109,15 @@ def run(live: bool = False, video_url: str = VIDEO_STREAM_URL) -> None:
             if key == ord(" "):
                 axes = {k: (0.0, 0.0) for k in axes}
                 print("已停桨")
+            elif key == ord("p"):
+                # 保存当前帧原图（标注前的画面，便于后续标定）
+                if frame is None:
+                    saved_note = "视频断开，无法保存"
+                else:
+                    path = save_snapshot(frame.copy())
+                    saved_note = f"已保存 {path.name}"
+                    print(f"已保存 {path}")
+                saved_at = now
             elif key == ord("t"):
                 show_detect = not show_detect
                 print(f"检测框：{'开' if show_detect else '关'}")
@@ -135,7 +154,11 @@ def run(live: bool = False, video_url: str = VIDEO_STREAM_URL) -> None:
             else:
                 lines.append("姿态 等待数据...")
             if show_detect:
-                lines.append("检测框 T=开")
+                lines.append("检测框 T=开 | P 保存图像")
+            else:
+                lines.append("检测框 T=关 | P 保存图像")
+            if saved_note is not None and now - saved_at < 2.5:
+                lines.append(saved_note)
             lines.append(f"FPS {fps:.1f} | Q/ESC 退出 空格停桨")
             draw_hud(frame, lines)
             cv2.imshow(window, frame)
