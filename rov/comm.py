@@ -70,11 +70,11 @@ class RobotComm:
     # ------------------------------------------------------------------ #
 
     async def start(self) -> None:
-        """启动发送/接收循环。"""
+        """启动发送/接收循环（模拟模式只记录不发送）。"""
         self._running = True
         self._loop = asyncio.get_running_loop()
+        self._send_task = asyncio.create_task(self._send_loop())
         if self._live:
-            self._send_task = asyncio.create_task(self._send_loop())
             self._recv_task = asyncio.create_task(self._recv_loop())
         logger.info("通信已启动：%s", "真实连接 " + self._url if self._live else "模拟模式")
 
@@ -128,11 +128,11 @@ class RobotComm:
     # ------------------------------------------------------------------ #
 
     async def _send_loop(self) -> None:
-        """定频发送指令；目标过期自动回中位。"""
+        """定频发送指令；目标过期自动回中位。模拟模式只记录不发送。"""
         interval = 1.0 / SEND_RATE_HZ
         while self._running:
             try:
-                if self._ws is None:
+                if self._live and self._ws is None:
                     await self._connect()
                     continue
 
@@ -143,7 +143,8 @@ class RobotComm:
 
                 cmd = build_command(mix(surge, yaw, heave))
                 self.last_command = cmd
-                await self._ws.send(cmd)
+                if self._live and self._ws is not None:
+                    await self._ws.send(cmd)
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001 - 断线交给下轮重连
