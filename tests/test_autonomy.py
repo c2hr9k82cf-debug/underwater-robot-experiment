@@ -19,8 +19,13 @@ from rov.autonomy import (
     TOUCH_S,
     TOUCH_SURGE,
     TOUCH_AREA_RATIO,
+    TURN_DONE_ERR,
+    TURN_FLOOR_FAR,
+    TURN_FLOOR_NEAR,
+    TURN_STABLE_FRAMES,
     AutonomyContext,
     AutonomyState,
+    _turn_toward,
     step,
 )
 from rov.detector import DetectionResult, WallSight
@@ -253,7 +258,7 @@ class TestWallSearch:
         assert out.yaw != 0.0                            # 无姿态 fallback：转向
 
     def test_peek_with_yaw_turns_then_stops(self) -> None:
-        """有姿态传感器：转到小角度目标（25°），到位后停桨静止观察。"""
+        """有姿态传感器：转到小角度目标（25°），连续两帧确认后停桨观察。"""
         ctx = AutonomyContext()
         wall = WallSight(0.2, 0.5, 0.3)
         step(ctx, LOST, FRAME, 0.0, wall=wall, yaw_deg=0.0)          # 记住航向 0°
@@ -262,9 +267,13 @@ class TestWallSearch:
         assert ctx.search_phase == "peek"
         assert ctx.slide_target == PEEK_TURN_DEG        # 小角度 25°，不是 90°
         assert out.yaw > 0                              # 右转到 25°
-        # 转到位（25°）后 → 停桨静止观察（"歇着看他"）
-        out2 = step(ctx, LOST, FRAME, SLIDE_BACKOFF_S + 1.0, yaw_deg=25.0)
-        assert out2.surge == 0.0 and out2.yaw == 0.0
+        # 到位第 1 帧：还在确认（噪声一帧不作数）
+        step(ctx, LOST, FRAME, SLIDE_BACKOFF_S + 1.0, yaw_deg=25.0)
+        assert not ctx.peek_turn_done
+        # 到位第 2 帧 → 确认，停桨静止观察（"歇着看他"）
+        out3 = step(ctx, LOST, FRAME, SLIDE_BACKOFF_S + 1.1, yaw_deg=25.0)
+        assert ctx.peek_turn_done
+        assert out3.surge == 0.0 and out3.yaw == 0.0
 
     def test_peek_timeout_creeps_then_peeks_again(self) -> None:
         """停看没找到 → 小步挪 → 再转一点再停看（角度递增）。"""
@@ -325,3 +334,42 @@ class TestWallSearch:
         out = step(ctx, LOST, FRAME, 0.1, yaw_deg=-20.0)
         assert out.yaw > 0
         assert out.surge == SEARCH_SURGE
+
+
+class TestTurnControl:
+    """转向 PD 闭环：分段保底推力 + 角速度阻尼 + 连续帧确认到位。"""
+
+    def test_far_angle_gets_full_effort(self) -> None:
+        """大角度（≥15°）保底推力：水里必须转得动。"""
+        ctx = AutonomyContext()
+        turn, done = _turn_toward(ctx, 90.0, 45.0, 0.0)   # 差 45°，静止起步
+        assert not done
+        assert abs(turn) >= TURN_FLOOR_FAR
+
+    def test_damping_reduces_thrust_when_spinning(self) -> None:
+        """转向中已有角速度 → 阻尼减推力，防冲过头。"""
+        ctx_still = AutonomyContext()
+        ctx_spin = AutonomyContext()
+        turn_still, _ = _turn_toward(ctx_still, 90.0, 50.0, 0.0)    # 差 40°，没转速
+        turn_spin, _ = _turn_toward(ctx_spin, 90.0, 50.0, 100.0)   # 差 40°，100°/s 转速
+        assert abs(turn_spin) < abs(turn_still)
+
+    def test_near_angle_uses_small_effort(self) -> None:
+        """小角度微调推力有限：防超调。"""
+        ctx = AutonomyContext()
+        turn, done = _turn_toward(ctx, 0.0, 8.0, 0.0)     # 差 8°（容差外）
+        assert not done
+        assert abs(turn) <= TURN_FLOOR_NEAR
+
+    def test_needs_stable_frames_to_finish(self) -> None:
+        """一帧进容差不算到位，连续帧才算（传感器噪声不作数）。"""
+        ctx = AutonomyContext()
+        _, done1 = _turn_toward(ctx, 25.0, 25.0, 0.0)     # 第 1 帧进容差
+        assert not done1
+        for i in range(1, TURN_STABLE_FRAMES):
+            _, done = _turn_toward(ctx, 25.0, 25.0, 0.0)
+        assert done
+        # 中途跑出容差：计数清零
+        _turn_toward(ctx, 25.0, 40.0, 0.0)
+        _, done_after = _turn_toward(ctx, 25.0, 25.0, 0.0)
+        assert not done_after

@@ -57,14 +57,18 @@ SLIDE_BACKOFF_S: float = 1.5      # 撞墙后至少后退时长（墙没退开�
 PEEK_TURN_DEG: float = 25.0       # 每次停看的小角度转向（逐次递增，不转 90°）
 PEEK_TURN_TIME: float = 0.7       # 无姿态传感器时的转向时长（秒）
 PEEK_S: float = 2.0               # 停桨静止观察时长（画面稳，检测容易）
-CREEP_S: float = 2.0              # 小步挪动时长
+CREEP_S: float = 3.0              # 斜向走时长（差速桨无横移，靠"转一点+前进"拼侧走）
 CREEP_SURGE: float = 0.5          # 小步挪动速度
 SIDE_PEEKS: int = 3               # 同侧停看次数，看满掉头去另一侧
 ADVANCE_MAX_S: float = 30.0       # 直行兜底：超时未见球也后退换方向
 TURN_YAW: float = 0.8             # 转向速度（无姿态传感器 fallback）
 TURN_KP: float = 0.03             # 转向航向 P 增益（度误差→推力，25°→0.75）
-TURN_CAP: float = 1.0             # 转向推力上限（给足，否则水里转不动）
-TURN_DONE_ERR: float = 6.0        # 转向到位角度容差（度）
+TURN_KD: float = 0.006            # 角速度阻尼（度/秒→推力），吸收惯性防冲过头
+TURN_FLOOR_FAR: float = 0.7       # 大角度（≥15°）保底推力（保证转得动）
+TURN_FLOOR_NEAR: float = 0.25     # 小角度微调推力（防超调）
+TURN_CAP: float = 1.0             # 转向推力上限
+TURN_DONE_ERR: float = 5.0        # 转向到位角度容差（度）
+TURN_STABLE_FRAMES: int = 2       # 连续 N 帧进容差才算到位（传感器噪声不作数）
 HEADING_KP: float = 0.05          # 航向保持增益（度误差→推力）
 HEADING_CAP: float = 0.5          # 航向/居中修正上限
 CENTER_FIX_KP: float = 0.5        # 视觉居中增益（左右走廊蓝色占比差→转向）
@@ -107,6 +111,9 @@ class AutonomyContext:
     slide_dir: float = 1.0              # 停看方向 +1 / -1
     peek_turn_done: bool = False        # 停看前的小角度转是否到位
     peek_count: int = 0                 # 同侧已停看次数（超 SIDE_PEEKS 掉头）
+    turn_stable: int = 0                # 转向到位连续帧计数
+    last_yaw: Optional[float] = None    # 上一帧 yaw（算角速度阻尼）
+    last_yaw_at: float = -1.0           # 上一帧 yaw 的时刻
 
 
 # ------------------------------------------------------------------ #
@@ -141,6 +148,30 @@ def _peek_target(ctx: AutonomyContext, yaw_deg: Optional[float]) -> Optional[flo
     return (ctx.heading_ref + step_deg) % 360.0
 
 
+def _turn_toward(
+    ctx: AutonomyContext, target: float, yaw_deg: float, yaw_rate: float
+) -> Tuple[float, bool]:
+    """PD 转向到目标航向 → (转向推力, 是否到位)。
+
+    - 分段保底推力：大角度给足（水里才转得动），小角度微调（防超调）
+    - 角速度阻尼：转得快时减推力，吸收惯性防冲过头
+    - 连续 TURN_STABLE_FRAMES 帧进容差才算到位（传感器噪声一帧不作数）
+    """
+    diff = _angle_diff(target, yaw_deg)
+    if abs(diff) <= TURN_DONE_ERR:
+        ctx.turn_stable += 1
+        if ctx.turn_stable >= TURN_STABLE_FRAMES:
+            return 0.0, True
+        return max(-TURN_FLOOR_NEAR, min(TURN_FLOOR_NEAR, TURN_KP * diff)), False
+    ctx.turn_stable = 0
+    turn = TURN_KP * diff - TURN_KD * yaw_rate
+    floor = TURN_FLOOR_FAR if abs(diff) >= 15.0 else TURN_FLOOR_NEAR
+    # 保底只在方向一致时生效（阻尼允许反向刹车）
+    if abs(turn) < floor and (turn == 0.0 or (turn > 0) == (diff > 0)):
+        turn = floor if diff > 0 else -floor
+    return max(-TURN_CAP, min(TURN_CAP, turn)), False
+
+
 def _reset_search(ctx: AutonomyContext, now: float) -> None:
     """回到直行搜索初始状态（保留 slide_dir 历史）。"""
     ctx.search_phase = "advance"
@@ -149,6 +180,7 @@ def _reset_search(ctx: AutonomyContext, now: float) -> None:
     ctx.slide_target = None
     ctx.peek_turn_done = False
     ctx.peek_count = 0
+    ctx.turn_stable = 0
 
 
 def step(
@@ -275,10 +307,18 @@ def _search_action(
     now: float,
     note: str,
 ) -> AutonomyOutput:
-    """SEARCH 子阶段动作：advance 直行 → backoff 后退 → peek 停看 → creep 小步挪。"""
+    """SEARCH 子阶段动作：advance 直行 → backoff 后退 → peek 停看 → creep 斜走。"""
     # 记住出发航向
     if yaw_deg is not None and ctx.heading_ref is None:
         ctx.heading_ref = yaw_deg
+
+    # 帧间角速度估计（度/秒，给转向阻尼用）
+    yaw_rate = 0.0
+    if yaw_deg is not None:
+        if ctx.last_yaw is not None and now > ctx.last_yaw_at:
+            yaw_rate = _angle_diff(yaw_deg, ctx.last_yaw) / (now - ctx.last_yaw_at)
+        ctx.last_yaw = yaw_deg
+        ctx.last_yaw_at = now
 
     # ---- 避障不是一次性：任何子阶段前方有墙都退回后退（不止退一次）----
     if wall is not None and wall.front >= WALL_FRONT_LIMIT \
@@ -306,9 +346,8 @@ def _search_action(
         if ctx.search_phase == "peek":
             if not ctx.peek_turn_done:
                 if ctx.slide_target is not None and yaw_deg is not None:
-                    diff = _angle_diff(ctx.slide_target, yaw_deg)
-                    if abs(diff) > TURN_DONE_ERR:
-                        turn = max(-TURN_CAP, min(TURN_CAP, TURN_KP * diff))
+                    turn, done = _turn_toward(ctx, ctx.slide_target, yaw_deg, yaw_rate)
+                    if not done:
                         return AutonomyOutput(0.0, turn, 0.0, ctx.state, note or "小角度转向")
                 elif now - ctx.phase_since < PEEK_TURN_TIME:
                     return AutonomyOutput(
