@@ -24,8 +24,8 @@ import numpy as np
 from rov.config import (
     HSV_RANGES,
     MAX_ASPECT_RATIO,
-    MIN_CIRCULARITY,
     MIN_CONTOUR_AREA,
+    MIN_HULL_FILL,
     TARGET_COLOR,
     TargetColor,
 )
@@ -89,11 +89,16 @@ class ContourCandidate:
     area: float
     bbox: Tuple[int, int, int, int]
     radius: float
-    circularity: float
+    hull_fill: float
 
 
 class BallDetector:
-    """基于 HSV 颜色分割的球检测器。"""
+    """基于 HSV 颜色分割的球检测器。
+
+    形状过滤采用凸包填充率（面积/凸包面积）而非圆形度：
+    浑水中球面有接缝、常被画框裁切，圆形度会低至 0.3 以下，
+    但凸包填充率稳定在 0.9 以上；水下杂质则填充率低。
+    """
 
     def __init__(
         self,
@@ -102,12 +107,12 @@ class BallDetector:
         hsv_lower: Optional[Tuple[int, int, int]] = None,
         hsv_upper: Optional[Tuple[int, int, int]] = None,
         min_area: float = MIN_CONTOUR_AREA,
-        min_circularity: float = MIN_CIRCULARITY,
+        min_hull_fill: float = MIN_HULL_FILL,
         max_aspect_ratio: float = MAX_ASPECT_RATIO,
     ) -> None:
         self.color: TargetColor = color
         self.min_area = min_area
-        self.min_circularity = min_circularity
+        self.min_hull_fill = min_hull_fill
         self.max_aspect_ratio = max_aspect_ratio
 
         # 允许覆盖默认阈值（调试工具用）
@@ -191,10 +196,11 @@ class BallDetector:
             seg_mask = cv2.inRange(hsv, np.array(lower), np.array(upper))
             combined = cv2.bitwise_or(combined, seg_mask)
 
-        # 形态学去噪：开运算去小亮点，闭运算填小洞
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        combined = cv2.morphologyEx(combined, cv2.MORPH_OPEN, kernel, iterations=1)
-        combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, kernel, iterations=1)
+        # 形态学去噪：开运算去小亮点，闭运算填洞并桥接球面接缝
+        open_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+        combined = cv2.morphologyEx(combined, cv2.MORPH_OPEN, open_kernel, iterations=1)
+        combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, close_kernel, iterations=1)
         return combined
 
     def _find_candidates(self, mask: np.ndarray) -> List[ContourCandidate]:
@@ -207,11 +213,13 @@ class BallDetector:
             if area < self.min_area:
                 continue
 
-            perimeter = float(cv2.arcLength(contour, True))
-            if perimeter <= 0:
+            # 凸包填充率：球体（哪怕被裁切、带接缝）接近 1，杂质明显更低
+            hull = cv2.convexHull(contour)
+            hull_area = float(cv2.contourArea(hull))
+            if hull_area <= 0:
                 continue
-            circularity = 4.0 * math.pi * area / (perimeter * perimeter)
-            if circularity < self.min_circularity:
+            hull_fill = area / hull_area
+            if hull_fill < self.min_hull_fill:
                 continue
 
             x, y, w, h = cv2.boundingRect(contour)
@@ -232,7 +240,7 @@ class BallDetector:
                     area=area,
                     bbox=(x, y, w, h),
                     radius=radius,
-                    circularity=circularity,
+                    hull_fill=hull_fill,
                 )
             )
 

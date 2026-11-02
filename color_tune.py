@@ -114,12 +114,11 @@ def main() -> int:
             if area < 300:  # 过滤小区域
                 continue
 
-            # 计算圆形度
-            perimeter = cv2.arcLength(contour, True)
-            if perimeter > 0:
-                circularity = 4 * np.pi * area / (perimeter * perimeter)
-                if circularity < 0.5:  # 过滤非圆形
-                    continue
+            # 凸包填充率过滤（与 rov/detector.py 一致，浑水中比圆形度可靠）
+            hull = cv2.convexHull(contour)
+            hull_area = cv2.contourArea(hull)
+            if hull_area <= 0 or area / hull_area < 0.85:  # 过滤杂质
+                continue
 
             # 绘制检测框
             x, y, w, h = cv2.boundingRect(contour)

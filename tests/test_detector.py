@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -102,8 +104,20 @@ class TestGreenDetection:
 
         assert result.status is DetectionStatus.LOST
 
-    def test_filters_non_circular(self) -> None:
-        """长条形状应被过滤。"""
+    def test_filters_low_hull_fill(self) -> None:
+        """L 形（凸包填充率低）应被过滤。"""
+        frame = make_frame()
+        # L 形：竖条 + 横条，凸包填充率约 0.6，低于 0.85 阈值
+        draw_bgr_rect(frame, (60, 40), (100, 180), GREEN_BGR)
+        draw_bgr_rect(frame, (60, 140), (220, 180), GREEN_BGR)
+
+        detector = BallDetector("green")
+        result = detector.detect(frame)
+
+        assert result.status is DetectionStatus.LOST
+
+    def test_filters_thin_shape(self) -> None:
+        """细长矩形应被宽高比过滤。"""
         frame = make_frame()
         draw_bgr_rect(frame, (30, 100), (280, 120), GREEN_BGR)  # 很长的矩形
 
@@ -222,3 +236,62 @@ class TestEdgeCases:
     def test_invalid_color_raises(self) -> None:
         with pytest.raises(ValueError):
             BallDetector("blue")  # type: ignore[arg-type]
+
+
+# ------------------------------------------------------------------ #
+# 真实水下截图回归测试（浑水红球标定验证，禁止改动 tests/data/ 图片）
+# ------------------------------------------------------------------ #
+
+DATA_DIR = Path(__file__).parent / "data"
+
+
+class TestUnderwaterRegression:
+    """用真实浑水截图验证红球检测（离线，不需要机器人）。"""
+
+    def _load(self, name: str):
+        import cv2
+
+        img = cv2.imread(str(DATA_DIR / name))
+        assert img is not None, f"缺少测试图片：{name}"
+        return img
+
+    def test_near_ball_detected(self) -> None:
+        """近距离红球：应检出，中心落在球体区域。"""
+        img = self._load("underwater_ball_near.png")
+        result = BallDetector("red").detect(img)
+
+        assert result.is_detected
+        assert result.center is not None
+        cx, cy = result.center
+        # 球体在画面左下（实测中心约 (354, 593)）
+        assert 250 < cx < 460
+        assert 500 < cy < 700
+        assert result.area is not None and result.area > 50000
+
+    def test_closeup_ball_detected(self) -> None:
+        """特写红球（球面带接缝）：应检出，中心在画面中下部。"""
+        img = self._load("underwater_ball_closeup.png")
+        result = BallDetector("red").detect(img)
+
+        assert result.is_detected
+        assert result.center is not None
+        cx, cy = result.center
+        # 实测中心约 (225, 347)
+        assert 120 < cx < 330
+        assert 250 < cy < 430
+
+    def test_far_murky_lost(self) -> None:
+        """远景浑水（球物理不可见）：应 LOST，不误检。"""
+        img = self._load("underwater_far_murky.png")
+        result = BallDetector("red").detect(img)
+
+        assert result.status is DetectionStatus.LOST
+        assert result.center is None
+
+    def test_background_crop_lost(self) -> None:
+        """纯背景裁块：应 LOST。"""
+        img = self._load("underwater_ball_near.png")
+        crop = img[300:600, 900:1200]  # 右侧浑水背景
+
+        result = BallDetector("red").detect(crop)
+        assert result.status is DetectionStatus.LOST
