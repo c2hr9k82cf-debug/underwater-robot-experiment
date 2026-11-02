@@ -18,7 +18,13 @@ import time
 
 import cv2
 
-from rov.config import VIDEO_STREAM_URL, WEBSOCKET_URL, WINDOW_NAME
+from rov.config import (
+    VIDEO_STREAM_URL,
+    WEBSOCKET_URL,
+    WINDOW_NAME,
+    YAW_SIGN,
+    YAW_TO_DEG,
+)
 from rov.autonomy import AutonomyContext, AutonomyState, step
 from rov.detector import BallDetector, detect_wall
 from rov.modes.runtime import CommRunner, draw_hud, placeholder_frame, pwm_hud_line
@@ -105,12 +111,14 @@ def run(live: bool = False, video_url: str = VIDEO_STREAM_URL) -> None:
                 gain = min(1.5, round(gain + 0.1, 2))
                 print(f"力度：{gain:.1f}×")
 
+            # 姿态适配：符号/单位按 config 归一（现场转向发散时调 YAW_SIGN/YAW_TO_DEG）
+            att = comm.attitude
+            yaw_deg = att.yaw * YAW_SIGN * YAW_TO_DEG if att is not None else None
+
             # 决策 + 发指令
             if frame is not None and not paused and not ctx.done:
                 result = detector.detect(frame)
                 wall_sight = detect_wall(frame)
-                att = comm.attitude
-                yaw_deg = att.yaw if att is not None else None
                 out = step(
                     ctx, result, (frame.shape[1], frame.shape[0]), now,
                     wall=wall_sight, yaw_deg=yaw_deg,
@@ -145,6 +153,11 @@ def run(live: bool = False, video_url: str = VIDEO_STREAM_URL) -> None:
             if wall_sight is not None:
                 hud_lines.append(
                     f"蓝墙 左{wall_sight.left:.0%} 前{wall_sight.front:.0%} 右{wall_sight.right:.0%}"
+                )
+            if comm.attitude is not None:
+                hud_lines.append(
+                    f"姿态 yaw 原始{comm.attitude.yaw:.1f} → 用{yaw_deg:.1f}"
+                    "（发散改 config 的 YAW_SIGN/YAW_TO_DEG）"
                 )
             hud_lines.append(
                 f"力度 {gain:.1f}× | FPS {fps:.1f} | 空格暂停 R重来 -/=力度 Q/ESC退出"

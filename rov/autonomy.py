@@ -69,6 +69,9 @@ TURN_FLOOR_NEAR: float = 0.25     # 小角度微调推力（防超调）
 TURN_CAP: float = 1.0             # 转向推力上限
 TURN_DONE_ERR: float = 5.0        # 转向到位角度容差（度）
 TURN_STABLE_FRAMES: int = 2       # 连续 N 帧进容差才算到位（传感器噪声不作数）
+PEEK_TURN_TIMEOUT_S: float = 3.0  # 转向超时强制停下观察（传感器不收敛也不能一直转）
+ALIGN_TIMEOUT_S: float = 5.0      # 对准超时无进展回搜索（防误检卡死）
+LOW_CONF_TIMEOUT_S: float = 5.0   # 目标太小迟迟不接近，超时回搜索
 HEADING_KP: float = 0.05          # 航向保持增益（度误差→推力）
 HEADING_CAP: float = 0.5          # 航向/居中修正上限
 CENTER_FIX_KP: float = 0.5        # 视觉居中增益（左右走廊蓝色占比差→转向）
@@ -242,6 +245,20 @@ def step(
         ctx.state = AutonomyState.APPROACH
         ctx.state_since = now
         note = "已对中，开始接近"
+    elif ctx.state is AutonomyState.ALIGN and now - ctx.state_since >= ALIGN_TIMEOUT_S:
+        # 防卡死：对准太久没进展（可能误检在乱动）→ 回搜索
+        ctx.state = AutonomyState.SEARCH
+        ctx.state_since = now
+        _reset_search(ctx, now)
+        note = "对准太久没进展，恢复搜索"
+    elif ctx.state is AutonomyState.APPROACH and detected \
+            and area_ratio < LOW_CONF_AREA_RATIO \
+            and now - ctx.state_since >= LOW_CONF_TIMEOUT_S:
+        # 防卡死：目标太小迟迟不敢接近 → 回搜索
+        ctx.state = AutonomyState.SEARCH
+        ctx.state_since = now
+        _reset_search(ctx, now)
+        note = "目标太小迟迟不接近，恢复搜索"
     elif ctx.state is AutonomyState.APPROACH and detected \
             and area_ratio >= TOUCH_AREA_RATIO:
         ctx.state = AutonomyState.TOUCH
@@ -347,13 +364,17 @@ def _search_action(
             if not ctx.peek_turn_done:
                 if ctx.slide_target is not None and yaw_deg is not None:
                     turn, done = _turn_toward(ctx, ctx.slide_target, yaw_deg, yaw_rate)
-                    if not done:
+                    if not done and now - ctx.phase_since < PEEK_TURN_TIMEOUT_S:
                         return AutonomyOutput(0.0, turn, 0.0, ctx.state, note or "小角度转向")
+                    if not done:
+                        # 转向超时（如姿态符号/单位不对导致不收敛）：
+                        # 不能一直转，强制停下来看球
+                        note = note or "转向没到位，先停下来看"
                 elif now - ctx.phase_since < PEEK_TURN_TIME:
                     return AutonomyOutput(
                         0.0, TURN_YAW * ctx.slide_dir, 0.0, ctx.state, note or "小角度转向"
                     )
-                # 转到位 → 静止观察计时开始
+                # 转到位（或超时）→ 静止观察计时开始
                 ctx.peek_turn_done = True
                 ctx.phase_since = now
             if now - ctx.phase_since < PEEK_S:

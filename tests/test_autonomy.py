@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from rov.autonomy import (
     ADVANCE_MAX_S,
+    ALIGN_TIMEOUT_S,
     APPROACH_SURGE,
     AVOID_YAW,
     BACKOFF_S,
@@ -11,6 +12,8 @@ from rov.autonomy import (
     CREEP_S,
     CREEP_SURGE,
     LOST_TIMEOUT_S,
+    LOW_CONF_TIMEOUT_S,
+    PEEK_TURN_TIMEOUT_S,
     PEEK_S,
     PEEK_TURN_DEG,
     SEARCH_SURGE,
@@ -373,3 +376,45 @@ class TestTurnControl:
         _turn_toward(ctx, 25.0, 40.0, 0.0)
         _, done_after = _turn_toward(ctx, 25.0, 25.0, 0.0)
         assert not done_after
+
+
+class TestAntiStuck:
+    """防卡死：任何情况都不能一直转/不动。"""
+
+    def test_peek_turn_timeout_forces_stop(self) -> None:
+        """转向不收敛（如姿态符号/单位不对）：超时强制停下观察，不能一直转。"""
+        ctx = AutonomyContext()
+        ctx.search_phase = "peek"
+        ctx.peek_turn_done = False
+        ctx.phase_since = 0.0
+        ctx.heading_ref = 0.0
+        ctx.slide_target = 90.0
+        # yaw 一直停在 0°，永远到不了 90° 目标
+        out = step(ctx, LOST, FRAME, PEEK_TURN_TIMEOUT_S + 0.1, yaw_deg=0.0)
+        assert ctx.peek_turn_done            # 强制转完
+        assert out.surge == 0.0 and out.yaw == 0.0   # 停下观察
+        # 转向中（超时前）确实还在转
+        ctx2 = AutonomyContext()
+        ctx2.search_phase = "peek"
+        ctx2.peek_turn_done = False
+        ctx2.phase_since = 0.0
+        ctx2.heading_ref = 0.0
+        ctx2.slide_target = 90.0
+        out2 = step(ctx2, LOST, FRAME, 1.0, yaw_deg=0.0)
+        assert out2.yaw != 0.0
+
+    def test_align_timeout_returns_search(self) -> None:
+        """对准太久没进展（误检乱动）：超时回搜索，不许一直对中。"""
+        ctx = AutonomyContext()
+        step(ctx, det_at(320), FRAME, 0.0)               # → ALIGN
+        out = step(ctx, det_at(500), FRAME, ALIGN_TIMEOUT_S + 0.1)  # 一直没对中
+        assert out.state is AutonomyState.SEARCH
+
+    def test_low_conf_timeout_returns_search(self) -> None:
+        """目标太小迟迟不敢接近：超时回搜索，不许一直原地对中。"""
+        ctx = AutonomyContext()
+        step(ctx, det_at(320), FRAME, 0.0)
+        step(ctx, det_at(320), FRAME, 0.0)               # → APPROACH
+        tiny = det_at(500, area=FRAME_AREA * 0.002)
+        out = step(ctx, tiny, FRAME, LOW_CONF_TIMEOUT_S + 0.1)
+        assert out.state is AutonomyState.SEARCH
