@@ -1,7 +1,7 @@
 """自主模式（菜单 5）：自动找球 → 对准 → 接近 → 轻触 → 后退。
 
 决策来自 rov.autonomy 状态机（纯逻辑，已单测），
-本模块只负责：取帧 → 检测 → 喂状态机 → 发推力 → HUD 显示。
+本模块只负责：取帧 → 检测（红球 + 蓝墙避障）→ 喂状态机 → 发推力 → HUD 显示。
 
   空格       暂停/恢复（暂停时发停桨帧）
   R          重新开始任务
@@ -20,7 +20,7 @@ import cv2
 
 from rov.config import VIDEO_STREAM_URL, WEBSOCKET_URL, WINDOW_NAME
 from rov.autonomy import AutonomyContext, AutonomyState, step
-from rov.detector import BallDetector
+from rov.detector import BallDetector, detect_wall
 from rov.modes.runtime import CommRunner, draw_hud, placeholder_frame, pwm_hud_line
 from rov.video_stream import VideoStream, VideoStreamError
 
@@ -45,6 +45,7 @@ def run(live: bool = False, video_url: str = VIDEO_STREAM_URL) -> None:
     show_detect = False
     gain = 1.0  # 推力力度增益（0.5–1.5，现场可调）
     last_state = None
+    wall_sight = None
     stream = VideoStream(video_url, reconnect=False, frame_timeout_s=1.5)
     window = f"{WINDOW_NAME} - 自主模式"
     last_open_attempt = 0.0
@@ -52,6 +53,7 @@ def run(live: bool = False, video_url: str = VIDEO_STREAM_URL) -> None:
 
     print("─── 自主模式 ─────────────────────────────")
     print("  机器人自动执行：直行找球 → 对准 → 接近 → 轻触 → 后退")
+    print("  蓝色墙壁自动避让（前方有墙会停下转向空旷侧）")
     print("  空格 暂停/恢复   R 重新开始   T 检测框   -/= 力度减/加")
     print("  Q / ESC 退出（自动发停桨帧）")
     print(f"  连接模式：{'真实机器人' if live else '模拟（不发指令）'}")
@@ -105,7 +107,8 @@ def run(live: bool = False, video_url: str = VIDEO_STREAM_URL) -> None:
             # 决策 + 发指令
             if frame is not None and not paused and not ctx.done:
                 result = detector.detect(frame)
-                out = step(ctx, result, (frame.shape[1], frame.shape[0]), now)
+                wall_sight = detect_wall(frame)
+                out = step(ctx, result, (frame.shape[1], frame.shape[0]), now, wall=wall_sight)
                 # 力度增益整体缩放推力（超界由混控层钳位）
                 comm.set_thrust(out.surge * gain, out.yaw * gain, out.heave * gain)
                 if out.state is not last_state:
@@ -128,12 +131,19 @@ def run(live: bool = False, video_url: str = VIDEO_STREAM_URL) -> None:
                 frame = placeholder_frame()
 
             conn = "已连接" if comm.connected else ("未连接" if live else "模拟")
-            draw_hud(frame, [
+            hud_lines = [
                 f"自主模式 | {state_label} | {conn}",
                 state_note or "",
                 pwm_hud_line(comm.last_command),
-                f"力度 {gain:.1f}× | FPS {fps:.1f} | 空格暂停 R重来 -/=力度 Q/ESC退出",
-            ])
+            ]
+            if wall_sight is not None:
+                hud_lines.append(
+                    f"蓝墙 左{wall_sight.left:.0%} 前{wall_sight.front:.0%} 右{wall_sight.right:.0%}"
+                )
+            hud_lines.append(
+                f"力度 {gain:.1f}× | FPS {fps:.1f} | 空格暂停 R重来 -/=力度 Q/ESC退出"
+            )
+            draw_hud(frame, hud_lines)
             # 状态大字画在画面下方
             cv2.putText(
                 frame, state_label, (10, frame.shape[0] - 20),

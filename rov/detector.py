@@ -27,6 +27,8 @@ from rov.config import (
     MIN_CONTOUR_AREA,
     MIN_HULL_FILL,
     TARGET_COLOR,
+    WALL_HSV_LOWER,
+    WALL_HSV_UPPER,
     TargetColor,
 )
 
@@ -90,6 +92,39 @@ class ContourCandidate:
     bbox: Tuple[int, int, int, int]
     radius: float
     hull_fill: float
+
+
+@dataclass(frozen=True)
+class WallSight:
+    """蓝色墙壁视野：画面中下部三列走廊的蓝色占比（0-1）。"""
+
+    left: float
+    front: float
+    right: float
+
+
+def detect_wall(
+    frame: np.ndarray,
+    hsv_lower: Tuple[int, int, int] = WALL_HSV_LOWER,
+    hsv_upper: Tuple[int, int, int] = WALL_HSV_UPPER,
+) -> WallSight:
+    """检测画面中蓝色墙壁的占比（避障用）。
+
+    把画面中下部（去掉上 1/4，水面本身偏蓝会干扰）分成
+    左/中/右三列走廊，返回各列蓝色像素占比。
+    前方（中央列）占比高 = 正对墙，避障转向用左右列判断空旷侧。
+    """
+    if frame is None or frame.size == 0:
+        return WallSight(0.0, 0.0, 0.0)
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv, np.array(hsv_lower), np.array(hsv_upper))
+    h, w = mask.shape
+    y0 = h // 4
+    third = w // 3
+    left = float(mask[y0:, :third].mean()) / 255.0
+    front = float(mask[y0:, third : 2 * third].mean()) / 255.0
+    right = float(mask[y0:, 2 * third :].mean()) / 255.0
+    return WallSight(left=left, front=front, right=right)
 
 
 class BallDetector:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from rov.autonomy import (
     APPROACH_SURGE,
+    AVOID_YAW,
     BACKOFF_S,
     BACKOFF_SURGE,
     LOST_TIMEOUT_S,
@@ -15,7 +16,7 @@ from rov.autonomy import (
     AutonomyState,
     step,
 )
-from rov.detector import DetectionResult
+from rov.detector import DetectionResult, WallSight
 
 FRAME = (640, 480)  # 宽, 高
 FRAME_AREA = 640 * 480
@@ -158,3 +159,47 @@ class TestLowConfidence:
         assert out.state is AutonomyState.APPROACH
         assert out.surge == 0.0      # 不前进
         assert out.yaw > 0            # 但会转向目标
+
+
+class TestWallAvoidance:
+    def test_avoid_turns_to_open_side(self) -> None:
+        """前方有墙（墙偏右）：不前进，朝空旷的左侧转。"""
+        ctx = AutonomyContext()
+        wall = WallSight(left=0.05, front=0.6, right=0.8)
+        out = step(ctx, LOST, FRAME, 0.0, wall=wall)
+        assert out.state is AutonomyState.SEARCH
+        assert out.surge == 0.0
+        assert out.yaw == -AVOID_YAW
+
+    def test_avoid_right_when_left_blocked(self) -> None:
+        """墙偏左：朝空旷的右侧转。"""
+        ctx = AutonomyContext()
+        wall = WallSight(left=0.8, front=0.6, right=0.05)
+        out = step(ctx, LOST, FRAME, 0.0, wall=wall)
+        assert out.yaw == AVOID_YAW
+
+    def test_no_wall_normal_search(self) -> None:
+        """前方无墙：正常直行找球。"""
+        ctx = AutonomyContext()
+        wall = WallSight(left=0.05, front=0.1, right=0.05)
+        out = step(ctx, LOST, FRAME, 0.0, wall=wall)
+        assert out.surge == SEARCH_SURGE
+        assert out.yaw == 0.0
+
+    def test_avoid_blocks_approach(self) -> None:
+        """接近中前方有墙：停止前进只转身。"""
+        ctx = AutonomyContext()
+        step(ctx, det_at(320), FRAME, 0.0)
+        step(ctx, det_at(320), FRAME, 0.0)  # → APPROACH
+        wall = WallSight(left=0.1, front=0.5, right=0.1)
+        out = step(ctx, det_at(320), FRAME, 0.0, wall=wall)
+        assert out.state is AutonomyState.APPROACH
+        assert out.surge == 0.0
+
+    def test_backoff_not_interrupted(self) -> None:
+        """后退是避险动作，不被避障打断。"""
+        ctx = AutonomyContext()
+        ctx.state = AutonomyState.BACKOFF
+        wall = WallSight(left=0.9, front=0.9, right=0.9)
+        out = step(ctx, LOST, FRAME, 0.0, wall=wall)
+        assert out.surge == BACKOFF_SURGE

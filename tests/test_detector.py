@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from rov.detector import BallDetector, DetectionStatus
+from rov.detector import BallDetector, DetectionStatus, WallSight, detect_wall
 
 
 # ------------------------------------------------------------------ #
@@ -295,3 +295,46 @@ class TestUnderwaterRegression:
 
         result = BallDetector("red").detect(crop)
         assert result.status is DetectionStatus.LOST
+
+
+# ------------------------------------------------------------------ #
+# 蓝色墙壁检测（避障，2026-11-02 按现场截屏标定）
+# ------------------------------------------------------------------ #
+
+WALL_BGR = (255, 0, 0)  # OpenCV 蓝
+
+
+class TestWallDetection:
+    def test_wall_on_right(self) -> None:
+        """墙在右列：right 高，left/front 低。"""
+        frame = make_frame()
+        frame[:, 214:] = WALL_BGR  # 右 1/3
+        sight = detect_wall(frame)
+        assert sight.right > 0.5
+        assert sight.front < 0.1
+        assert sight.left < 0.1
+
+    def test_wall_in_front(self) -> None:
+        """正对墙：front 高。"""
+        frame = make_frame()
+        frame[:, 107:214] = WALL_BGR  # 中央 1/3
+        sight = detect_wall(frame)
+        assert sight.front > 0.5
+
+    def test_open_water_all_low(self) -> None:
+        """开阔水（灰）：三列都低。"""
+        sight = detect_wall(make_frame())
+        assert sight.left < 0.05
+        assert sight.front < 0.05
+        assert sight.right < 0.05
+
+    def test_red_ball_not_wall(self) -> None:
+        """红球不能误判为墙。"""
+        frame = make_frame()
+        draw_bgr_circle(frame, (160, 120), 50, (0, 0, 255))
+        sight = detect_wall(frame)
+        assert sight.front < 0.05
+
+    def test_empty_frame(self) -> None:
+        sight = detect_wall(np.array([]))
+        assert sight == WallSight(0.0, 0.0, 0.0)

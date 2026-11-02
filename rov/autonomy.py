@@ -23,10 +23,12 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional, Tuple
 
-from rov.detector import DetectionResult
+from rov.config import WALL_FRONT_LIMIT
+from rov.detector import DetectionResult, WallSight
 
 # --- 可调参数 ---
 SEARCH_SURGE: float = 0.5         # 搜索直行前进速度
+AVOID_YAW: float = 0.45           # 避障转向角速度
 ALIGN_KP: float = 0.8             # 对中 P 增益（误差→转向角速度）
 ALIGN_DONE_ERR: float = 0.12      # |归一化横偏差| 小于该值视为对中
 APPROACH_SURGE: float = 0.5      # 接近前进速度
@@ -82,6 +84,7 @@ def step(
     result: DetectionResult,
     frame_size: Tuple[int, int],
     now: float,
+    wall: Optional[WallSight] = None,
 ) -> AutonomyOutput:
     """状态机单步决策（ctx 是唯一可变记忆）。
 
@@ -91,6 +94,7 @@ def step(
     - result: 本帧检测结果
     - frame_size: (宽, 高)
     - now: 单调时钟秒（测试可注入假时间）
+    - wall: 蓝色墙壁视野（可选，None=不做避障）
     """
     if ctx.state is AutonomyState.DONE:
         return AutonomyOutput(0.0, 0.0, 0.0, AutonomyState.DONE, "任务已完成")
@@ -137,6 +141,19 @@ def step(
         ctx.state_since = now
         ctx.done = True
         note = "任务完成"
+
+    # ---- 避障（优先于前进动作；ALIGN 不前进、BACKOFF 在后退，不打断）----
+    if (
+        wall is not None
+        and wall.front >= WALL_FRONT_LIMIT
+        and ctx.state in (AutonomyState.SEARCH, AutonomyState.APPROACH, AutonomyState.TOUCH)
+    ):
+        # 朝空旷（墙少）的一侧转；两侧相当默认右转
+        direction = -1.0 if wall.left < wall.right else 1.0
+        return AutonomyOutput(
+            0.0, direction * AVOID_YAW, 0.0, ctx.state,
+            note or "前方有墙，转向避让",
+        )
 
     # ---- 当前状态动作 ----
     if ctx.state is AutonomyState.SEARCH:

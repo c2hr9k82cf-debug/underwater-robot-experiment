@@ -59,3 +59,13 @@ HSV_RANGES: dict[str, dict[str, tuple[tuple[int, int, int], tuple[int, int, int]
 MIN_CONTOUR_AREA: float = 300.0     # 小于此面积的轮廓视为噪声
 MIN_HULL_FILL: float = 0.85         # 凸包填充率下限（面积/凸包面积，完美凸形=1.0）
 MAX_ASPECT_RATIO: float = 2.5       # 宽高比超过此值视为非球形
+
+# ============================================================
+# 蓝色墙壁避障（2026-11-02 按现场截屏标定）
+# ============================================================
+# 墙体 HSV（截屏采样：H 86-108 / S 54-139 / V 93-143，留余量）
+# 红球 H≤27，与蓝色完全正交，互不干扰
+WALL_HSV_LOWER: tuple[int, int, int] = (90, 50, 60)
+WALL_HSV_UPPER: tuple[int, int, int] = (130, 255, 255)
+# 前方走廊蓝色占比超过此值视为前方有墙（实测：正对墙 49%，开阔水 0%）
+WALL_FRONT_LIMIT: float = 0.40
