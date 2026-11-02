@@ -36,17 +36,18 @@ from typing import Optional, Tuple
 from rov.config import WALL_FRONT_LIMIT
 from rov.detector import DetectionResult, WallSight
 
-# --- 可调参数 ---
-SEARCH_SURGE: float = 0.5         # 搜索直行前进速度
-AVOID_YAW: float = 0.45           # 避障转向角速度
+# --- 可调参数（实机反馈：转向要转得动、推进要游得动，数值偏大取）---
+SEARCH_SURGE: float = 0.7         # 搜索直行前进速度
+AVOID_YAW: float = 0.7            # 避障转向角速度
 ALIGN_KP: float = 0.8             # 对中 P 增益（误差→转向角速度）
 ALIGN_DONE_ERR: float = 0.12      # |归一化横偏差| 小于该值视为对中
-APPROACH_SURGE: float = 0.5       # 接近前进速度
-APPROACH_YAW_CAP: float = 0.35    # 接近时对中修正上限
+ALIGN_YAW_CAP: float = 0.8        # 对中转向上限
+APPROACH_SURGE: float = 0.7       # 接近前进速度
+APPROACH_YAW_CAP: float = 0.5     # 接近时对中修正上限
 TOUCH_AREA_RATIO: float = 0.12    # 目标面积占画面比例达到该值→轻触
-TOUCH_SURGE: float = 0.35         # 轻推速度
+TOUCH_SURGE: float = 0.5          # 轻推速度
 TOUCH_S: float = 1.5              # 轻推时长
-BACKOFF_SURGE: float = -0.4       # 后退速度
+BACKOFF_SURGE: float = -0.6       # 后退速度
 BACKOFF_S: float = 1.5            # 后退时长
 LOST_TIMEOUT_S: float = 0.8       # 丢失超过该时长回搜索
 LOW_CONF_AREA_RATIO: float = 0.005  # 面积占比低于此视为低置信（只对中不前进）
@@ -57,15 +58,16 @@ PEEK_TURN_DEG: float = 25.0       # 每次停看的小角度转向（逐次递�
 PEEK_TURN_TIME: float = 0.7       # 无姿态传感器时的转向时长（秒）
 PEEK_S: float = 2.0               # 停桨静止观察时长（画面稳，检测容易）
 CREEP_S: float = 2.0              # 小步挪动时长
-CREEP_SURGE: float = 0.3          # 小步挪动速度
+CREEP_SURGE: float = 0.5          # 小步挪动速度
 SIDE_PEEKS: int = 3               # 同侧停看次数，看满掉头去另一侧
 ADVANCE_MAX_S: float = 30.0       # 直行兜底：超时未见球也后退换方向
-TURN_YAW: float = 0.5             # 转向速度（无姿态传感器 fallback）
-TURN_KP: float = 0.01             # 转向航向 P 增益（度误差→推力）
+TURN_YAW: float = 0.8             # 转向速度（无姿态传感器 fallback）
+TURN_KP: float = 0.03             # 转向航向 P 增益（度误差→推力，25°→0.75）
+TURN_CAP: float = 1.0             # 转向推力上限（给足，否则水里转不动）
 TURN_DONE_ERR: float = 6.0        # 转向到位角度容差（度）
-HEADING_KP: float = 0.03          # 航向保持增益（度误差→推力）
-HEADING_CAP: float = 0.35         # 航向/居中修正上限
-CENTER_FIX_KP: float = 0.35       # 视觉居中增益（左右走廊蓝色占比差→转向）
+HEADING_KP: float = 0.05          # 航向保持增益（度误差→推力）
+HEADING_CAP: float = 0.5          # 航向/居中修正上限
+CENTER_FIX_KP: float = 0.5        # 视觉居中增益（左右走廊蓝色占比差→转向）
 
 
 class AutonomyState(Enum):
@@ -244,7 +246,7 @@ def step(
     if ctx.state is AutonomyState.ALIGN:
         if not detected:
             return AutonomyOutput(0.0, 0.0, 0.0, ctx.state, note or "短暂丢失，保持")
-        yaw = max(-0.5, min(0.5, ALIGN_KP * err))
+        yaw = max(-ALIGN_YAW_CAP, min(ALIGN_YAW_CAP, ALIGN_KP * err))
         return AutonomyOutput(0.0, yaw, 0.0, ctx.state, note)
 
     if ctx.state is AutonomyState.APPROACH:
@@ -306,7 +308,7 @@ def _search_action(
                 if ctx.slide_target is not None and yaw_deg is not None:
                     diff = _angle_diff(ctx.slide_target, yaw_deg)
                     if abs(diff) > TURN_DONE_ERR:
-                        turn = max(-0.5, min(0.5, TURN_KP * diff))
+                        turn = max(-TURN_CAP, min(TURN_CAP, TURN_KP * diff))
                         return AutonomyOutput(0.0, turn, 0.0, ctx.state, note or "小角度转向")
                 elif now - ctx.phase_since < PEEK_TURN_TIME:
                     return AutonomyOutput(
