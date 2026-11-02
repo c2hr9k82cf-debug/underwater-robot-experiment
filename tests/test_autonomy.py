@@ -9,6 +9,9 @@ from rov.autonomy import (
     BACKOFF_SURGE,
     LOST_TIMEOUT_S,
     SEARCH_SURGE,
+    SLIDE_BACKOFF_S,
+    SLIDE_MAX_S,
+    SLIDE_SURGE,
     TOUCH_S,
     TOUCH_SURGE,
     TOUCH_AREA_RATIO,
@@ -163,38 +166,33 @@ class TestLowConfidence:
 
 class TestWallAvoidance:
     def test_avoid_turns_to_open_side(self) -> None:
-        """前方有墙（墙偏右）：不前进，朝空旷的左侧转。"""
+        """接近中没看到球、前方被墙占满（墙偏右）：朝空旷的左侧转。"""
         ctx = AutonomyContext()
+        step(ctx, det_at(320), FRAME, 0.0)
+        step(ctx, det_at(320), FRAME, 0.0)  # → APPROACH
         wall = WallSight(left=0.05, front=0.6, right=0.8)
-        out = step(ctx, LOST, FRAME, 0.0, wall=wall)
-        assert out.state is AutonomyState.SEARCH
+        out = step(ctx, LOST, FRAME, 0.1, wall=wall)
+        assert out.state is AutonomyState.APPROACH
         assert out.surge == 0.0
         assert out.yaw == -AVOID_YAW
 
     def test_avoid_right_when_left_blocked(self) -> None:
         """墙偏左：朝空旷的右侧转。"""
         ctx = AutonomyContext()
+        step(ctx, det_at(320), FRAME, 0.0)
+        step(ctx, det_at(320), FRAME, 0.0)  # → APPROACH
         wall = WallSight(left=0.8, front=0.6, right=0.05)
-        out = step(ctx, LOST, FRAME, 0.0, wall=wall)
+        out = step(ctx, LOST, FRAME, 0.1, wall=wall)
         assert out.yaw == AVOID_YAW
 
-    def test_no_wall_normal_search(self) -> None:
-        """前方无墙：正常直行找球。"""
-        ctx = AutonomyContext()
-        wall = WallSight(left=0.05, front=0.1, right=0.05)
-        out = step(ctx, LOST, FRAME, 0.0, wall=wall)
-        assert out.surge == SEARCH_SURGE
-        assert out.yaw == 0.0
-
-    def test_avoid_blocks_approach(self) -> None:
-        """接近中前方有墙：停止前进只转身。"""
+    def test_target_visible_not_avoided(self) -> None:
+        """目标可见时直接冲目标，不避障（球贴墙场景必须能碰到球）。"""
         ctx = AutonomyContext()
         step(ctx, det_at(320), FRAME, 0.0)
         step(ctx, det_at(320), FRAME, 0.0)  # → APPROACH
-        wall = WallSight(left=0.1, front=0.5, right=0.1)
+        wall = WallSight(left=0.1, front=0.6, right=0.1)  # 球背后是墙
         out = step(ctx, det_at(320), FRAME, 0.0, wall=wall)
-        assert out.state is AutonomyState.APPROACH
-        assert out.surge == 0.0
+        assert out.surge == APPROACH_SURGE
 
     def test_backoff_not_interrupted(self) -> None:
         """后退是避险动作，不被避障打断。"""
@@ -203,3 +201,63 @@ class TestWallAvoidance:
         wall = WallSight(left=0.9, front=0.9, right=0.9)
         out = step(ctx, LOST, FRAME, 0.0, wall=wall)
         assert out.surge == BACKOFF_SURGE
+
+
+class TestWallSearch:
+    """撞墙 → 后退 → 沿墙横移巡逻（长方形水池对侧贴墙找球）。"""
+
+    def test_hit_wall_backs_off(self) -> None:
+        """直行到墙没见球：先后退。"""
+        ctx = AutonomyContext()
+        wall = WallSight(left=0.2, front=0.5, right=0.3)
+        out = step(ctx, LOST, FRAME, 0.0, wall=wall)
+        assert out.state is AutonomyState.SEARCH
+        assert out.surge < 0
+        assert ctx.search_phase == "backoff"
+
+    def test_backoff_then_slide_turns(self) -> None:
+        """后退完成进入沿墙横移：先转向沿墙方向。"""
+        ctx = AutonomyContext()
+        wall = WallSight(0.2, 0.5, 0.3)
+        step(ctx, LOST, FRAME, 0.0, wall=wall)          # → backoff
+        out = step(ctx, LOST, FRAME, SLIDE_BACKOFF_S, wall=wall)
+        assert ctx.search_phase == "slide"
+        assert out.yaw != 0.0                            # 无姿态 fallback：转向
+
+    def test_slide_with_yaw_turns_then_goes(self) -> None:
+        """有姿态传感器：先转到垂直航向（±90°），到位后横移前进。"""
+        ctx = AutonomyContext()
+        wall = WallSight(0.2, 0.5, 0.3)
+        step(ctx, LOST, FRAME, 0.0, wall=wall, yaw_deg=0.0)   # 记住航向 0°
+        out = step(ctx, LOST, FRAME, SLIDE_BACKOFF_S, wall=wall, yaw_deg=0.0)
+        assert ctx.search_phase == "slide"
+        assert ctx.slide_target == 90.0                   # slide_dir=+1 → 目标 90°
+        assert out.yaw > 0                                # 右转到 90°
+        # 转到位后横移前进 + 保持航向
+        out2 = step(ctx, LOST, FRAME, SLIDE_BACKOFF_S + 1.0, yaw_deg=88.0)
+        assert out2.surge == SLIDE_SURGE
+
+    def test_slide_reverses_after_timeout(self) -> None:
+        """单侧横移超时：掉头反向。"""
+        ctx = AutonomyContext()
+        ctx.search_phase = "slide"
+        ctx.phase_since = 0.0
+        ctx.slide_dir = 1.0
+        out = step(ctx, LOST, FRAME, SLIDE_MAX_S)         # 无墙无 yaw
+        assert ctx.slide_dir == -1.0
+        assert out.surge == SLIDE_SURGE
+
+    def test_side_wall_correction(self) -> None:
+        """直行时贴左墙（跑偏）：向池心右修。"""
+        ctx = AutonomyContext()
+        wall = WallSight(left=0.6, front=0.1, right=0.1)
+        out = step(ctx, LOST, FRAME, 0.0, wall=wall)
+        assert out.yaw > 0
+
+    def test_heading_hold_corrects_drift(self) -> None:
+        """航向保持：出发航向 0°，漂到 -20° → 右修回来。"""
+        ctx = AutonomyContext()
+        step(ctx, LOST, FRAME, 0.0, yaw_deg=0.0)          # 记住航向
+        out = step(ctx, LOST, FRAME, 0.1, yaw_deg=-20.0)
+        assert out.yaw > 0
+        assert out.surge == SEARCH_SURGE

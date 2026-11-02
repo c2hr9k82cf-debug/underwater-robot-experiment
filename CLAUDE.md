@@ -39,7 +39,7 @@ python -m pytest tests/test_detector.py::测试函数名 -v   # 单个测试
 - `rov/comm.py` — `RobotComm`：websockets 客户端，**10 Hz 心跳发送循环**（防推进器鸣叫），推力超 0.5s 未更新自动回中位，断线重连，模拟/真实双模式。`live=False` 时不连接只记录 `last_command`。
 - `rov/detector.py` — `BallDetector`：HSV 分割 → 形态学（open 5×5 + close 9×9）→ 轮廓过滤（面积、**凸包填充率 ≥0.85**、宽高比）→ 取面积最大候选。输出 `DetectionResult`。另有 `detect_wall()` → `WallSight`（蓝色墙壁三列走廊占比，避障用）。
 - `rov/video_stream.py` — `VideoStream`：对 `cv2.VideoCapture` 的薄封装，FPS 统计、断流超时（`FRAME_TIMEOUT_S`）、可选自动重连。
-- `rov/autonomy.py` — 自主状态机（**纯函数** `step(ctx, result, frame_size, now)`，无 IO，离线可测）：SEARCH→ALIGN→APPROACH→TOUCH→BACKOFF→DONE。**搜索=直行前进找球**（看到球再转向对准，不原地旋转）。参数集中在模块顶部。
+- `rov/autonomy.py` — 自主状态机（**纯函数** `step(ctx, result, frame_size, now, wall, yaw_deg)`，无 IO，离线可测）：SEARCH→ALIGN→APPROACH→TOUCH→BACKOFF→DONE。**SEARCH 内含沿墙搜索子阶段**：advance 直行（yaw 航向保持+侧墙修正）→ 撞墙 backoff 后退 → slide 沿墙横移巡逻（超时掉头）。场景：长方形水池，球在对侧贴墙。参数集中在模块顶部。
 - `rov/modes/` — 界面层：`manual.py`（WASD 驾驶）、`auto.py`（自主模式）、`detect.py`（检测验证）、`runtime.py`（`CommRunner` 跨线程通信桥、`draw_hud`、`save_snapshot`）。
 
 ### 关键设计约定
@@ -48,7 +48,8 @@ python -m pytest tests/test_detector.py::测试函数名 -v   # 单个测试
 - **红色双段 HSV**：红色跨 H=0/180 边界，`HSV_RANGES` 中 `red` + `red_wrap` 两段由 `detector.build_mask()` 自动 OR 合并。不要把它简化成单段。
 - **凸包填充率替代圆形度**：真实球面有接缝、会被画框裁切，圆形度实测仅 0.27–0.50 不可用；填充率 = 轮廓面积/凸包面积 ≥ 0.85。不要再改回圆形度过滤。
 - **浑水预期 LOST**：远处球物理不可见，检测不到是正确行为；自主状态机靠 SEARCH 兜底。不要为了让远处检出而放松阈值。
-- **蓝墙避障**：水体本身偏蓝，避障只看画面**中下部**（去上 1/4）三列走廊的蓝色占比，前方 ≥40% 视为有墙；红球 H≤27 与蓝墙 H 90–130 完全正交。避障只覆盖前进类状态（SEARCH/APPROACH/TOUCH），不打断 ALIGN/BACKOFF。
+- **蓝墙避障**：水体本身偏蓝，避障只看画面**中下部**（去上 1/4）三列走廊的蓝色占比，前方 ≥40% 视为有墙；红球 H≤27 与蓝墙 H 90–130 完全正交。避障只在**目标不可见**时对 APPROACH/TOUCH 生效（球贴墙场景必须能碰到球）；SEARCH 的墙处理由沿墙搜索子阶段接管。
+- **姿态传感器**：传感器回传 `roll:pitch:yaw`（度）。`step()` 的 `yaw_deg=None` 时所有航向逻辑退化为定时 fallback，不要假设姿态数据一定存在。
 - **手动模式松键回停**：按键保持 0.5s 无输入自动回中位（HOLD_S），是刻意的安全设计，不要改成"保持速度"。
 - **心跳不能停**：`comm` 的 10 Hz 发送循环是防鸣叫保活，退出时补发 3 帧中位再断开。
 - `BallDetector` 构造函数接受 `hsv_lower`/`hsv_upper` 覆盖默认阈值，调试工具用它实时预览，不写回 config。

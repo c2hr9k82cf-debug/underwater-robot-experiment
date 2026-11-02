@@ -53,7 +53,8 @@ def run(live: bool = False, video_url: str = VIDEO_STREAM_URL) -> None:
 
     print("─── 自主模式 ─────────────────────────────")
     print("  机器人自动执行：直行找球 → 对准 → 接近 → 轻触 → 后退")
-    print("  蓝色墙壁自动避让（前方有墙会停下转向空旷侧）")
+    print("  到墙没找到球会自动：后退 → 沿墙横移巡逻（来回掉头）")
+    print("  蓝墙自动避让 + 姿态传感器航向保持（防跑偏）")
     print("  空格 暂停/恢复   R 重新开始   T 检测框   -/= 力度减/加")
     print("  Q / ESC 退出（自动发停桨帧）")
     print(f"  连接模式：{'真实机器人' if live else '模拟（不发指令）'}")
@@ -108,7 +109,12 @@ def run(live: bool = False, video_url: str = VIDEO_STREAM_URL) -> None:
             if frame is not None and not paused and not ctx.done:
                 result = detector.detect(frame)
                 wall_sight = detect_wall(frame)
-                out = step(ctx, result, (frame.shape[1], frame.shape[0]), now, wall=wall_sight)
+                att = comm.attitude
+                yaw_deg = att.yaw if att is not None else None
+                out = step(
+                    ctx, result, (frame.shape[1], frame.shape[0]), now,
+                    wall=wall_sight, yaw_deg=yaw_deg,
+                )
                 # 力度增益整体缩放推力（超界由混控层钳位）
                 comm.set_thrust(out.surge * gain, out.yaw * gain, out.heave * gain)
                 if out.state is not last_state:
