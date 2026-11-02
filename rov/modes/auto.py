@@ -138,6 +138,8 @@ def run(live: bool = False, video_url: str = VIDEO_STREAM_URL) -> None:
                 state_label = "已暂停 PAUSED"
                 state_note = "按空格恢复"
             else:
+                # 没帧/任务完成也持续喂中位心跳（防推进器鸣叫、防依赖过期兜底）
+                comm.set_thrust(0.0, 0.0, 0.0)
                 state_label = STATE_LABELS[ctx.state]
                 state_note = "任务已完成，按 R 重新开始" if ctx.done else "等待视频"
 
