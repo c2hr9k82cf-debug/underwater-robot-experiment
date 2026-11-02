@@ -6,6 +6,7 @@
   空格       暂停/恢复（暂停时发停桨帧）
   R          重新开始任务
   T          检测框开关
+  - / =      力度减 / 加（0.5×–1.5×，推力整体缩放）
   Q / ESC    退出（自动发停桨帧）
 
 终端只在状态切换时打一行，状态大字显示在画面上。
@@ -42,6 +43,7 @@ def run(live: bool = False, video_url: str = VIDEO_STREAM_URL) -> None:
     ctx = AutonomyContext()
     paused = False
     show_detect = False
+    gain = 1.0  # 推力力度增益（0.5–1.5，现场可调）
     last_state = None
     stream = VideoStream(video_url, reconnect=False, frame_timeout_s=1.5)
     window = f"{WINDOW_NAME} - 自主模式"
@@ -49,8 +51,8 @@ def run(live: bool = False, video_url: str = VIDEO_STREAM_URL) -> None:
     fps = 0.0
 
     print("─── 自主模式 ─────────────────────────────")
-    print("  机器人自动执行：搜索 → 对准 → 接近 → 轻触 → 后退")
-    print("  空格 暂停/恢复    R 重新开始    T 检测框")
+    print("  机器人自动执行：直行找球 → 对准 → 接近 → 轻触 → 后退")
+    print("  空格 暂停/恢复   R 重新开始   T 检测框   -/= 力度减/加")
     print("  Q / ESC 退出（自动发停桨帧）")
     print(f"  连接模式：{'真实机器人' if live else '模拟（不发指令）'}")
     print("──────────────────────────────────────────")
@@ -93,12 +95,19 @@ def run(live: bool = False, video_url: str = VIDEO_STREAM_URL) -> None:
                 print("任务已重新开始")
             elif key == ord("t"):
                 show_detect = not show_detect
+            elif key in (ord("-"), ord("_")):
+                gain = max(0.5, round(gain - 0.1, 2))
+                print(f"力度：{gain:.1f}×")
+            elif key in (ord("="), ord("+")):
+                gain = min(1.5, round(gain + 0.1, 2))
+                print(f"力度：{gain:.1f}×")
 
             # 决策 + 发指令
             if frame is not None and not paused and not ctx.done:
                 result = detector.detect(frame)
                 out = step(ctx, result, (frame.shape[1], frame.shape[0]), now)
-                comm.set_thrust(out.surge, out.yaw, out.heave)
+                # 力度增益整体缩放推力（超界由混控层钳位）
+                comm.set_thrust(out.surge * gain, out.yaw * gain, out.heave * gain)
                 if out.state is not last_state:
                     if out.note:
                         print(f"[{out.state.value}] {out.note}")
@@ -123,7 +132,7 @@ def run(live: bool = False, video_url: str = VIDEO_STREAM_URL) -> None:
                 f"自主模式 | {state_label} | {conn}",
                 state_note or "",
                 pwm_hud_line(comm.last_command),
-                f"FPS {fps:.1f} | 空格暂停 R重来 Q/ESC退出",
+                f"力度 {gain:.1f}× | FPS {fps:.1f} | 空格暂停 R重来 -/=力度 Q/ESC退出",
             ])
             # 状态大字画在画面下方
             cv2.putText(

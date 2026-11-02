@@ -39,7 +39,7 @@ python -m pytest tests/test_detector.py::测试函数名 -v   # 单个测试
 - `rov/comm.py` — `RobotComm`：websockets 客户端，**10 Hz 心跳发送循环**（防推进器鸣叫），推力超 0.5s 未更新自动回中位，断线重连，模拟/真实双模式。`live=False` 时不连接只记录 `last_command`。
 - `rov/detector.py` — `BallDetector`：HSV 分割 → 形态学（open 5×5 + close 9×9）→ 轮廓过滤（面积、**凸包填充率 ≥0.85**、宽高比）→ 取面积最大候选。输出 `DetectionResult`。
 - `rov/video_stream.py` — `VideoStream`：对 `cv2.VideoCapture` 的薄封装，FPS 统计、断流超时（`FRAME_TIMEOUT_S`）、可选自动重连。
-- `rov/autonomy.py` — 自主状态机（**纯函数** `step(ctx, result, frame_size, now)`，无 IO，离线可测）：SEARCH→ALIGN→APPROACH→TOUCH→BACKOFF→DONE。参数集中在模块顶部。
+- `rov/autonomy.py` — 自主状态机（**纯函数** `step(ctx, result, frame_size, now)`，无 IO，离线可测）：SEARCH→ALIGN→APPROACH→TOUCH→BACKOFF→DONE。**搜索=直行前进找球**（看到球再转向对准，不原地旋转）。参数集中在模块顶部。
 - `rov/modes/` — 界面层：`manual.py`（WASD 驾驶）、`auto.py`（自主模式）、`detect.py`（检测验证）、`runtime.py`（`CommRunner` 跨线程通信桥、`draw_hud`、`save_snapshot`）。
 
 ### 关键设计约定

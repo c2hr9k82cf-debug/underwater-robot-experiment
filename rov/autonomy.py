@@ -1,16 +1,16 @@
 """自主运动状态机（纯逻辑，无 IO）。
 
 状态与转换：
-    SEARCH    慱速旋转找球            ──检出──▶ ALIGN
+    SEARCH    直行前进找球            ──检出──▶ ALIGN
     ALIGN     把球心转到画面中央      ──对中──▶ APPROACH
     APPROACH  前进接近 + 持续对中修正  ──够大──▶ TOUCH
-                                 └──丢失>0.8s──▶ SEARCH（朝最后方向转）
+                                 └──丢失>0.8s──▶ SEARCH（继续直行）
     TOUCH     低速轻推 1.5s          ──▶ BACKOFF
     BACKOFF   后退 1.5s              ──▶ DONE
     DONE      停桨，任务结束
 
 浑水中目标频繁丢失是常态，所以：
-- 丢失恢复带方向记忆（朝最后看到球的方向先转）
+- 丢失后恢复直行搜索（继续边走边看），简单可靠
 - 低置信检测只对中不前进，防止在浑水误检上"撞山"
 
 决策函数是纯函数（输入检测结果+时间 → 输出推力+新状态），
@@ -26,15 +26,15 @@ from typing import Optional, Tuple
 from rov.detector import DetectionResult
 
 # --- 可调参数 ---
-SEARCH_YAW: float = 0.25          # 搜索旋转速度
+SEARCH_SURGE: float = 0.5         # 搜索直行前进速度
 ALIGN_KP: float = 0.8             # 对中 P 增益（误差→转向角速度）
 ALIGN_DONE_ERR: float = 0.12      # |归一化横偏差| 小于该值视为对中
-APPROACH_SURGE: float = 0.30      # 接近前进速度
+APPROACH_SURGE: float = 0.5      # 接近前进速度
 APPROACH_YAW_CAP: float = 0.35    # 接近时对中修正上限
 TOUCH_AREA_RATIO: float = 0.12    # 目标面积占画面比例达到该值→轻触
-TOUCH_SURGE: float = 0.20         # 轻推速度
+TOUCH_SURGE: float = 0.35         # 轻推速度
 TOUCH_S: float = 1.5              # 轻推时长
-BACKOFF_SURGE: float = -0.25      # 后退速度
+BACKOFF_SURGE: float = -0.4      # 后退速度
 BACKOFF_S: float = 1.5            # 后退时长
 LOST_TIMEOUT_S: float = 0.8       # 丢失超过该时长回搜索
 LOW_CONF_AREA_RATIO: float = 0.005  # 面积占比低于此视为低置信（只对中不前进）
@@ -140,11 +140,8 @@ def step(
 
     # ---- 当前状态动作 ----
     if ctx.state is AutonomyState.SEARCH:
-        # 朝最后看到球的方向转；从未见过就默认右转
-        direction = 1.0
-        if ctx.last_seen_cx is not None:
-            direction = 1.0 if ctx.last_seen_cx > 0 else -1.0
-        return AutonomyOutput(0.0, direction * SEARCH_YAW, 0.0, ctx.state, note)
+        # 直行前进找球：边走边看，看到红球再转向对准
+        return AutonomyOutput(SEARCH_SURGE, 0.0, 0.0, ctx.state, note)
 
     if ctx.state is AutonomyState.ALIGN:
         if not detected:

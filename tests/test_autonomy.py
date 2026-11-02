@@ -7,7 +7,7 @@ from rov.autonomy import (
     BACKOFF_S,
     BACKOFF_SURGE,
     LOST_TIMEOUT_S,
-    SEARCH_YAW,
+    SEARCH_SURGE,
     TOUCH_S,
     TOUCH_SURGE,
     TOUCH_AREA_RATIO,
@@ -39,10 +39,11 @@ class TestSearchToDone:
         ctx = AutonomyContext()
         now = 0.0
 
-        # SEARCH：无目标时原地旋转
+        # SEARCH：无目标时直行前进找球
         out = step(ctx, LOST, FRAME, now)
         assert out.state is AutonomyState.SEARCH
-        assert abs(out.yaw) == SEARCH_YAW
+        assert out.surge == SEARCH_SURGE
+        assert out.yaw == 0.0
 
         # 检出（居中）→ ALIGN
         out = step(ctx, det_at(320), FRAME, now)
@@ -80,19 +81,19 @@ class TestSearchToDone:
         assert out.state is AutonomyState.DONE
         assert out.surge == 0.0 and out.yaw == 0.0
 
-    def test_search_yaw_follows_last_seen(self) -> None:
-        """回搜索后朝最后看到球的方向转。"""
+    def test_search_goes_straight_after_loss(self) -> None:
+        """丢失回搜索后继续直行找球（不转向）。"""
         ctx = AutonomyContext()
         now = 0.0
 
-        # 检出在画面左侧（cx < 320）
         step(ctx, det_at(100), FRAME, now)
         step(ctx, det_at(100), FRAME, now)  # ALIGN
         # 丢失超时回 SEARCH
         now += LOST_TIMEOUT_S + 0.1
         out = step(ctx, LOST, FRAME, now)
         assert out.state is AutonomyState.SEARCH
-        assert out.yaw < 0  # 左侧 → 左转找
+        assert out.surge == SEARCH_SURGE
+        assert out.yaw == 0.0
 
 
 class TestAlign:
