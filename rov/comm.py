@@ -111,12 +111,16 @@ class RobotComm:
         self._target_time = time.monotonic()
 
     def send_shutdown(self) -> None:
-        """发送关机指令（flag=1）。仅限用户显式请求，不重试。"""
+        """发送关机指令（flag=1）。仅限用户显式请求，不重试。
+
+        线程安全：UI 线程可直接调用，内部调度到事件循环执行。
+        """
         cmd = build_command(mix(0.0, 0.0, 0.0), shutdown=True)
         self.last_command = cmd
-        if self._live and self._ws is not None:
+        if self._live and self._ws is not None and self._loop is not None:
             try:
-                asyncio.ensure_future(self._ws.send(cmd))
+                future = asyncio.run_coroutine_threadsafe(self._ws.send(cmd), self._loop)
+                future.result(timeout=2)
                 logger.warning("已发送关机指令：%s", cmd)
             except Exception as exc:  # noqa: BLE001
                 logger.error("关机指令发送失败：%s", exc)
