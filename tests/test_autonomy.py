@@ -261,20 +261,20 @@ class TestWallSearch:
         assert out.yaw != 0.0                            # 无姿态 fallback：转向
 
     def test_peek_with_yaw_turns_then_stops(self) -> None:
-        """有姿态传感器：转到小角度目标（25°），连续两帧确认后停桨观察。"""
+        """有姿态传感器：转到停看目标角度，连续两帧确认后停桨观察。"""
         ctx = AutonomyContext()
         wall = WallSight(0.2, 0.5, 0.3)
         step(ctx, LOST, FRAME, 0.0, wall=wall, yaw_deg=0.0)          # 记住航向 0°
         out = step(ctx, LOST, FRAME, SLIDE_BACKOFF_S, wall=WallSight(0.1, 0.1, 0.1),
                    yaw_deg=0.0)
         assert ctx.search_phase == "peek"
-        assert ctx.slide_target == PEEK_TURN_DEG        # 小角度 25°，不是 90°
-        assert out.yaw > 0                              # 右转到 25°
+        assert ctx.slide_target == PEEK_TURN_DEG        # 步进角度，不一次转大角
+        assert out.yaw > 0                              # 右转到目标航向
         # 到位第 1 帧：还在确认（噪声一帧不作数）
-        step(ctx, LOST, FRAME, SLIDE_BACKOFF_S + 1.0, yaw_deg=25.0)
+        step(ctx, LOST, FRAME, SLIDE_BACKOFF_S + 1.0, yaw_deg=PEEK_TURN_DEG)
         assert not ctx.peek_turn_done
         # 到位第 2 帧 → 确认，停桨静止观察（"歇着看他"）
-        out3 = step(ctx, LOST, FRAME, SLIDE_BACKOFF_S + 1.1, yaw_deg=25.0)
+        out3 = step(ctx, LOST, FRAME, SLIDE_BACKOFF_S + 1.1, yaw_deg=PEEK_TURN_DEG)
         assert ctx.peek_turn_done
         assert out3.surge == 0.0 and out3.yaw == 0.0
 
@@ -290,7 +290,7 @@ class TestWallSearch:
         out = step(ctx, LOST, FRAME, PEEK_S + 0.1, yaw_deg=PEEK_TURN_DEG)
         assert ctx.search_phase == "creep"
         assert out.surge == CREEP_SURGE
-        # creep 时长到 → 回 peek，目标角度递增到 50°
+        # creep 时长到 → 回 peek，目标角度递增（×2）
         out2 = step(ctx, LOST, FRAME, PEEK_S + 0.1 + CREEP_S + 0.1,
                     yaw_deg=PEEK_TURN_DEG)
         assert ctx.search_phase == "peek"
