@@ -5,7 +5,7 @@
 ## 启动
 
 ```bash
-cd ~/rov-local-test
+cd ~/Documents/rov-local-test
 source .venv/bin/activate
 python main.py
 ```
@@ -54,5 +54,5 @@ python main.py
 ## 离线自检
 
 ```bash
-python -m pytest tests/ -v    # 48 个测试，不需要机器人
+python -m pytest tests/ -v    # 75 个测试，不需要机器人
 ```

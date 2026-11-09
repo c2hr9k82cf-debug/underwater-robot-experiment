@@ -16,7 +16,7 @@ GitHub 仓库名受英文限制，中文名即「水下机器人实验」。
 ## 快速开始
 
 ```bash
-cd ~/rov-local-test
+cd ~/Documents/rov-local-test
 source .venv/bin/activate
 python main.py
 ```
@@ -141,7 +141,7 @@ BACKOFF（后退 1.5s）◀──TOUCH（轻推 1.5s）◀── APPROACH（前�
 ## 环境安装
 
 ```bash
-cd ~/rov-local-test
+cd ~/Documents/rov-local-test
 python3 -m venv .venv          # 已创建可跳过
 source .venv/bin/activate
 pip install -r requirements.txt
