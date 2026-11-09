@@ -21,12 +21,12 @@ from typing import List, Optional, Tuple
 import cv2
 import numpy as np
 
+from rov import config
 from rov.config import (
     HSV_RANGES,
     MAX_ASPECT_RATIO,
     MIN_CONTOUR_AREA,
     MIN_HULL_FILL,
-    TARGET_COLOR,
     WALL_HSV_LOWER,
     WALL_HSV_UPPER,
     TargetColor,
@@ -137,7 +137,7 @@ class BallDetector:
 
     def __init__(
         self,
-        color: TargetColor = TARGET_COLOR,
+        color: Optional[TargetColor] = None,
         *,
         hsv_lower: Optional[Tuple[int, int, int]] = None,
         hsv_upper: Optional[Tuple[int, int, int]] = None,
@@ -145,7 +145,8 @@ class BallDetector:
         min_hull_fill: float = MIN_HULL_FILL,
         max_aspect_ratio: float = MAX_ASPECT_RATIO,
     ) -> None:
-        self.color: TargetColor = color
+        # None=跟随 config.TARGET_COLOR（main.py 启动时选择红/绿）
+        self.color: TargetColor = color if color is not None else config.TARGET_COLOR
         self.min_area = min_area
         self.min_hull_fill = min_hull_fill
         self.max_aspect_ratio = max_aspect_ratio
@@ -155,7 +156,7 @@ class BallDetector:
             self._hsv_segments: List[Tuple[Tuple[int, int, int], Tuple[int, int, int]]] = [
                 (hsv_lower, hsv_upper)
             ]
-        elif color == "red":
+        elif self.color == "red":
             # 红色跨 H=0/180，需两段合并
             seg1 = HSV_RANGES["red"]
             seg2 = HSV_RANGES["red_wrap"]
@@ -163,13 +164,13 @@ class BallDetector:
                 (seg1["lower"], seg1["upper"]),
                 (seg2["lower"], seg2["upper"]),
             ]
-        elif color == "green":
+        elif self.color == "green":
             seg = HSV_RANGES["green"]
             self._hsv_segments = [(seg["lower"], seg["upper"])]
         else:
-            raise ValueError(f"不支持的目标颜色：{color!r}，请选择 'green' 或 'red'")
+            raise ValueError(f"不支持的目标颜色：{self.color!r}，请选择 'green' 或 'red'")
 
-        logger.info("BallDetector 初始化：color=%s, segments=%d", color, len(self._hsv_segments))
+        logger.info("BallDetector 初始化：color=%s, segments=%d", self.color, len(self._hsv_segments))
 
     # ------------------------------------------------------------------ #
     # 核心检测

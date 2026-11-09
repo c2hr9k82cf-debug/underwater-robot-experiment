@@ -38,8 +38,11 @@ TARGET_COLOR: TargetColor = "red"
 #   球与背景的主要区分度在 S（球≥135）而非 H。
 HSV_RANGES: dict[str, dict[str, tuple[tuple[int, int, int], tuple[int, int, int]]]] = {
     "green": {
-        # 绿色在 HSV 中的常规范围（保留，未按浑水标定）
-        "lower": (35, 80, 80),
+        # 绿球标定依据（2026-11-09 真实水下特写截图）：
+        #   球体 H 62-84 / S 43-191 / V 26-195；浑水背景 H 90-101。
+        #   区分度在 H（S/V 与球大面积重叠，不能像红色那样靠 S）。
+        #   H 上限压 85 与蓝墙（H 90-130）正交；下限 55 给阴影留余量并挡黄色渣滓（H≈47-60）。
+        "lower": (55, 45, 25),
         "upper": (85, 255, 255),
     },
     "red": {

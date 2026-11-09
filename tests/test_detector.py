@@ -297,6 +297,39 @@ class TestUnderwaterRegression:
         assert result.status is DetectionStatus.LOST
 
 
+class TestGreenBallRegression:
+    """真实水下绿球截图回归（2026-11-09 绿球标定验证）。"""
+
+    def test_green_closeup_detected(self) -> None:
+        """绿球特写（带接缝、浑水）：应检出，中心在画面右侧。"""
+        import cv2
+
+        img = cv2.imread(str(DATA_DIR / "underwater_green_closeup.png"))
+        assert img is not None, "缺少测试图片：underwater_green_closeup.png"
+        result = BallDetector("green").detect(img)
+
+        assert result.is_detected
+        assert result.center is not None
+        cx, cy = result.center
+        # 球体占画面右侧大部（实测中心约 (818, 515)）
+        assert cx > 600
+        assert result.area is not None and result.area > 300000
+
+
+def test_default_color_follows_config() -> None:
+    """不指定颜色时跟随 config.TARGET_COLOR（main.py 启动时可选红/绿）。"""
+    from rov import config
+
+    old = config.TARGET_COLOR
+    try:
+        config.TARGET_COLOR = "green"
+        assert BallDetector().color == "green"
+        config.TARGET_COLOR = "red"
+        assert BallDetector().color == "red"
+    finally:
+        config.TARGET_COLOR = old
+
+
 # ------------------------------------------------------------------ #
 # 蓝色墙壁检测（避障，2026-11-02 按现场截屏标定）
 # ------------------------------------------------------------------ #

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import sys
 
+from rov import config
 from rov.config import ROBOT_HOST, VIDEO_STREAM_URL, WEBSOCKET_URL
 
 BANNER = """
@@ -38,6 +39,18 @@ def ask_live() -> bool:
     print("   请确认：已留好物理急停方式，周围无障碍物。")
     answer = input("   连接真实机器人？[y/N]: ").strip().lower()
     return answer in ("y", "yes")
+
+
+def ask_target_color() -> None:
+    """启动时选择目标球颜色（回车默认红球）。"""
+    print("\n目标球颜色：[1] 红球（默认）  [2] 绿球")
+    try:
+        answer = input("请选择 [1/2]: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        answer = ""
+    config.TARGET_COLOR = "green" if answer == "2" else "red"
+    label = "绿球" if config.TARGET_COLOR == "green" else "红球"
+    print(f"目标球已设为：{label}")
 
 
 def mode_video() -> None:
@@ -171,6 +184,7 @@ def main() -> int:
 
     print(BANNER)
     print(f"机器人：{ROBOT_HOST}（默认模拟模式，真实输出需确认）")
+    ask_target_color()
 
     while True:
         print(MENU)

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-水下机器人（ROV）自主寻找并轻触红球的本地测试项目。Mac 通过网线直连机器人（不经树莓派），机器人地址 `192.168.137.100`。Python 3.11 + OpenCV，无框架。git 仓库，远程为 GitHub 公开仓库 `underwater-robot-experiment`（中文名「水下机器人实验」）。
+水下机器人（ROV）自主寻找并轻触红球/绿球（启动时选择）的本地测试项目。Mac 通过网线直连机器人（不经树莓派），机器人地址 `192.168.137.100`。Python 3.11 + OpenCV，无框架。git 仓库，远程为 GitHub 公开仓库 `underwater-robot-experiment`（中文名「水下机器人实验」）。
 
 **安全约束（必须遵守）**：默认模拟模式，不控制推进器。真实推进器输出必须显式开启并经操作者确认，且需保留物理急停方式。不要在未经确认的情况下添加任何电机/推进器控制逻辑。关机指令（标志 1）只允许从 `main.py` 菜单 7 发送。
 
@@ -34,21 +34,22 @@ python -m pytest tests/test_detector.py::测试函数名 -v   # 单个测试
 
 `rov/` 共享库 + 顶层薄入口脚本 + `rov/modes/` 界面层。
 
-- `rov/config.py` — 所有共享常量的唯一来源：机器人地址、视频参数、`TARGET_COLOR`（当前 "red"）、`HSV_RANGES`（红球双段）、轮廓过滤参数（`MIN_CONTOUR_AREA`/`MIN_HULL_FILL`/`MAX_ASPECT_RATIO`）。调参后统一写回这里。
+- `rov/config.py` — 所有共享常量的唯一来源：机器人地址、视频参数、`TARGET_COLOR`（启动时选择红/绿，默认 "red"）、`HSV_RANGES`（红球双段 + 绿球单段）、轮廓过滤参数（`MIN_CONTOUR_AREA`/`MIN_HULL_FILL`/`MAX_ASPECT_RATIO`）。调参后统一写回这里。
 - `rov/thrusters.py` — PWM 映射与混控（纯函数）：`mix(surge, yaw, heave)` 反桨差速（`l = 1462 + (surge+yaw)×200`，`r = 1462 − (surge−yaw)×200`，竖直不反向），PWM 钳位 [1262, 1662]，`build_command`/`stop_command`/`shutdown_command`/`parse_sensor`。协议权威来源是 `机器人使用说明.pdf`（已入库）。
 - `rov/comm.py` — `RobotComm`：websockets 客户端，**10 Hz 心跳发送循环**（防推进器鸣叫），推力超 0.5s 未更新自动回中位，断线重连，模拟/真实双模式。`live=False` 时不连接只记录 `last_command`。
 - `rov/detector.py` — `BallDetector`：HSV 分割 → 形态学（open 5×5 + close 9×9）→ 轮廓过滤（面积、**凸包填充率 ≥0.85**、宽高比）→ 取面积最大候选。输出 `DetectionResult`。另有 `detect_wall()` → `WallSight`（蓝色墙壁三列走廊占比，避障用）。
 - `rov/video_stream.py` — `VideoStream`：对 `cv2.VideoCapture` 的薄封装，FPS 统计、断流超时（`FRAME_TIMEOUT_S`）、可选自动重连。
-- `rov/autonomy.py` — 自主状态机（**纯函数** `step(ctx, result, frame_size, now, wall, yaw_deg)`，无 IO，离线可测）：SEARCH→ALIGN→APPROACH→TOUCH→BACKOFF→DONE。**SEARCH 内含沿墙搜索子阶段**：advance 直行（yaw 航向保持+视觉居中）→ 撞墙 backoff 持续后退离墙 → peek 小角度转（25° 逐次递增）停桨观察 → creep 小步挪（同侧 3 次掉头）。场景：长方形水池，球在对侧贴墙。参数集中在模块顶部。
+- `rov/autonomy.py` — 自主状态机（**纯函数** `step(ctx, result, frame_size, now, wall, yaw_deg)`，无 IO，离线可测）：SEARCH→ALIGN→APPROACH→TOUCH→BACKOFF→DONE。**SEARCH 内含沿墙搜索子阶段**：advance 直行（yaw 航向保持+视觉居中）→ 撞墙 backoff 持续后退离墙 → peek 转 45°（逐次递增 45°/90°/135°）停桨观察 5s → creep 小步挪（同侧 3 次掉头）。场景：长方形水池，球在对侧贴墙。参数集中在模块顶部。
 - `rov/modes/` — 界面层：`manual.py`（WASD 驾驶）、`auto.py`（自主模式）、`detect.py`（检测验证）、`runtime.py`（`CommRunner` 跨线程通信桥、`draw_hud`、`save_snapshot`）。
 
 ### 关键设计约定
 
 - **LOST 语义**：检测失败时 `DetectionResult` 的坐标类字段（center/area/bbox/radius）全部为 None，绝不返回过期坐标。改动检测输出时保持这一约定。
 - **红色双段 HSV**：红色跨 H=0/180 边界，`HSV_RANGES` 中 `red` + `red_wrap` 两段由 `detector.build_mask()` 自动 OR 合并。不要把它简化成单段。
+- **绿球靠 H 区分**：浑水下绿球与水体 S/V 大面积重叠，区分度在 H（球 62-84 vs 水 90-101），`green` 单段 H 上限压 85 与蓝墙（H 90-130）正交。红/绿由 `main.py` 启动时选择写入 `config.TARGET_COLOR`，`BallDetector()` 不传 color 时跟随它（构造时读取，运行中改配置不影响已建实例）。
 - **凸包填充率替代圆形度**：真实球面有接缝、会被画框裁切，圆形度实测仅 0.27–0.50 不可用；填充率 = 轮廓面积/凸包面积 ≥ 0.85。不要再改回圆形度过滤。
 - **浑水预期 LOST**：远处球物理不可见，检测不到是正确行为；自主状态机靠 SEARCH 兜底。不要为了让远处检出而放松阈值。
-- **蓝墙避障**：水体本身偏蓝，避障只看画面**中下部**（去上 1/4）三列走廊的蓝色占比，前方 ≥30% 视为有墙（0.40 实测偏高易漏判）；红球 H≤27 与蓝墙 H 90–130 完全正交。避障只在**目标不可见**时对 APPROACH/TOUCH 生效（球贴墙场景必须能碰到球）；SEARCH 的墙处理由沿墙搜索子阶段接管，**每帧都查、不是一次性**——任何子阶段前方出现墙都持续后退直到离墙，直行超时也兜底后退。
+- **蓝墙避障**：水体本身偏蓝，避障只看画面**中下部**（去上 1/4）三列走廊的蓝色占比，前方 ≥30% 视为有墙（0.40 实测偏高易漏判）；红球 H≤27、绿球 H≤85 与蓝墙 H 90–130 完全正交。避障只在**目标不可见**时对 APPROACH/TOUCH 生效（球贴墙场景必须能碰到球）；SEARCH 的墙处理由沿墙搜索子阶段接管，**每帧都查、不是一次性**——任何子阶段前方出现墙都持续后退直到离墙，直行超时也兜底后退。
 - **姿态传感器**：传感器回传 `roll:pitch:yaw`（度）。yaw 已闭环用于转向定位（PD：阻尼防超调+连续帧确认到位）和航向保持；roll/pitch 目前仅 HUD 显示不参与控制。`step()` 的 `yaw_deg=None` 时所有航向逻辑退化为定时 fallback，不要假设姿态数据一定存在。符号/单位不确定：`config.py` 的 `YAW_SIGN`/`YAW_TO_DEG` 现场适配（转向单方向转不停=转向发散），auto.py 传入前归一、HUD 显示原始读数。
 - **防卡死兜底**：转向超 `PEEK_TURN_TIMEOUT_S` 强制停下观察；ALIGN 超 `ALIGN_TIMEOUT_S`、低置信接近超 `LOW_CONF_TIMEOUT_S` 回 SEARCH。任何传感器异常都不能让状态机一直转或停着不动。
 - **差速桨无横移**：机器人只有左右差速双桨，物理上不能平移横走；"侧着走/沿墙巡逻"只能靠"转一点 + 斜着前进"拼出来，所以转向精度直接决定侧走质量。

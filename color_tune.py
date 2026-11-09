@@ -28,7 +28,7 @@ import time
 import cv2
 import numpy as np
 
-from rov.config import VIDEO_STREAM_URL, HSV_RANGES
+from rov.config import HSV_RANGES, TARGET_COLOR, VIDEO_STREAM_URL
 from rov.detector import BallDetector
 
 
@@ -63,7 +63,7 @@ def main() -> int:
     print("✅ 视频流已连接！\n")
 
     # 初始颜色和阈值
-    current_color = "red"
+    current_color = TARGET_COLOR  # 跟随启动时选择的目标球颜色
     seg = HSV_RANGES[current_color.lower()]
     lower = list(seg["lower"])
     upper = list(seg["upper"])

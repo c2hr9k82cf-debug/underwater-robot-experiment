@@ -38,10 +38,10 @@ from rov.detector import DetectionResult, WallSight
 
 # --- 可调参数（实机反馈：转向要转得动、推进要游得动，数值偏大取）---
 SEARCH_SURGE: float = 0.7         # 搜索直行前进速度
-AVOID_YAW: float = 0.7            # 避障转向角速度
+AVOID_YAW: float = 0.9            # 避障转向角速度（实机转向偏弱，加大）
 ALIGN_KP: float = 0.8             # 对中 P 增益（误差→转向角速度）
 ALIGN_DONE_ERR: float = 0.12      # |归一化横偏差| 小于该值视为对中
-ALIGN_YAW_CAP: float = 0.8        # 对中转向上限
+ALIGN_YAW_CAP: float = 1.0        # 对中转向上限（实机转向力度不足，给满）
 APPROACH_SURGE: float = 0.7       # 接近前进速度
 APPROACH_YAW_CAP: float = 0.5     # 接近时对中修正上限
 TOUCH_AREA_RATIO: float = 0.12    # 目标面积占画面比例达到该值→轻触
@@ -61,15 +61,15 @@ CREEP_S: float = 3.0              # 斜向走时长（差速桨无横移，靠"�
 CREEP_SURGE: float = 0.5          # 小步挪动速度
 SIDE_PEEKS: int = 3               # 同侧停看次数，看满掉头去另一侧
 ADVANCE_MAX_S: float = 30.0       # 直行兜底：超时未见球也后退换方向
-TURN_YAW: float = 0.8             # 转向速度（无姿态传感器 fallback）
-TURN_KP: float = 0.03             # 转向航向 P 增益（度误差→推力，25°→0.75）
+TURN_YAW: float = 1.0             # 转向速度（无姿态传感器 fallback，实机偏弱给满）
+TURN_KP: float = 0.03             # 转向航向 P 增益（度误差→推力）
 TURN_KD: float = 0.006            # 角速度阻尼（度/秒→推力），吸收惯性防冲过头
-TURN_FLOOR_FAR: float = 0.7       # 大角度（≥15°）保底推力（保证转得动）
-TURN_FLOOR_NEAR: float = 0.25     # 小角度微调推力（防超调）
+TURN_FLOOR_FAR: float = 0.95      # 大角度（≥15°）保底推力（实机转不动，大幅加大）
+TURN_FLOOR_NEAR: float = 0.45     # 小角度微调推力（兼顾防超调）
 TURN_CAP: float = 1.0             # 转向推力上限
 TURN_DONE_ERR: float = 5.0        # 转向到位角度容差（度）
 TURN_STABLE_FRAMES: int = 2       # 连续 N 帧进容差才算到位（传感器噪声不作数）
-PEEK_TURN_TIMEOUT_S: float = 3.0  # 转向超时强制停下观察（传感器不收敛也不能一直转）
+PEEK_TURN_TIMEOUT_S: float = 4.0  # 转向超时强制停下观察（实机转得慢给足时间，仍设上限防失控）
 ALIGN_TIMEOUT_S: float = 5.0      # 对准超时无进展回搜索（防误检卡死）
 LOW_CONF_TIMEOUT_S: float = 5.0   # 目标太小迟迟不接近，超时回搜索
 HEADING_KP: float = 0.05          # 航向保持增益（度误差→推力）
